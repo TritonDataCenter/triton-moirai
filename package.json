@@ -1,0 +1,19 @@
+{
+  "name": "triton-moirai",
+  "version": "0.0.1",
+  "description": "Triton Load Balancer",
+  "main": "parser.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TritonDataCenter/triotn-moirai.git"
+  },
+  "author": "MNX Cloud (mnx.io)",
+  "license": "MPL-2.0",
+  "bugs": {
+    "url": "https://github.com/TritonDataCenter/triotn-moirai/issues"
+  },
+  "homepage": "https://github.com/TritonDataCenter/triotn-moirai#readme",
+  "dependencies": {
+    "smfgen": "^1.2.0"
+  }
+}
