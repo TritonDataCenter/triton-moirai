@@ -112,7 +112,7 @@ publish: release
 include ./deps/eng/tools/mk/Makefile.deps
 ifeq ($(shell uname -s),SunOS)
         include ./deps/eng/tools/mk/Makefile.node_prebuilt.targ
-        include ./deps/eng/tools/mk/Makefile.agent_prebuilt.targ
+        # include ./deps/eng/tools/mk/Makefile.agent_prebuilt.targ
 endif
 include ./deps/eng/tools/mk/Makefile.smf.targ
 include ./deps/eng/tools/mk/Makefile.targ
