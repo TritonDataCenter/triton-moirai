@@ -28,11 +28,11 @@ NODEUNIT  := ./node_modules/.bin/nodeunit
 #
 # Files
 #
-JS_FILES        := $(shell find . -name '*.js')
+JS_FILES        := $(shell find lib -name '*.js') parser.js
 ESLINT_FILES     = $(JS_FILES)
-JSSTYLE_FILES    = server.js $(JS_FILES)
+JSSTYLE_FILES    = $(JS_FILES)
 JSSTYLE_FLAGS    = -o indent=4,doxygen,unparenthesized-return=0,leading-right-paren-ok=1
-SMF_MANIFESTS    = smf/manifests/$(NAME).xml
+SMF_MANIFESTS    = smf/manifests/postboot.xml
 
 ENGBLD_USE_BUILDIMAGE   = true
 ENGBLD_REQUIRE          := $(shell git submodule update --init deps/eng)

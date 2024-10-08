@@ -25,11 +25,15 @@ var MAX_PORT = 65534;
 var MIN_PORT = 1;
 var MAX_BACKENDS_LOW = 32;
 var MAX_BACKENDS_HIGH = 1024;
+var STICKY_MODES = [
+    'http',
+    'https'
+]
 
 var frontends = {};
 var backends  = {};
 
-var dbg = function(x) {
+var dbg = function (x) {
     console.error(JSON.stringify(x, null, 2));
 };
 
@@ -37,7 +41,8 @@ var mdataGet = function (key, callback) {
     // assert.string(key, 'key');
     // assert.func(callback, 'callback');
 
-    var md_cmd = os.platform() === 'sunos' ? '/usr/sbin/mdata-get' : process.cwd() + '/tools/mock-mdata-get';
+    var md_cmd = os.platform() === 'sunos' ? '/usr/sbin/mdata-get' :
+        process.cwd() + '/tools/mock-mdata-get';
 
     // child_process.execFile('/usr/sbin/mdata-get', [
     child_process.execFile(md_cmd, [
@@ -74,9 +79,15 @@ mdataGet('cloud.tritoncompute:portmap', function (s) {
     dbg({mDataString: s});
     var removed = [];
     var services = s.split(/[, ]/)
-                    .map(function (x) {return parseService(x, removed);})
-                    // Filter out null results from non-matches
-                    .filter(function (x) { if (x) {return x;}});
+                    .map(function (x) {
+                        return parseService(x, removed);
+                    })
+                    .filter(function (x) {
+                        // Filter out null results from non-matches
+                        if (x) {
+                            return x;
+                        }
+                    });
 
     // Validate fields of matcing objects.
     services = services.filter(function (x) {
@@ -117,10 +128,10 @@ mdataGet('cloud.tritoncompute:portmap', function (s) {
 
         services.forEach(function (x, i) {
             var bind = '\tbind *:' + x.listen;
-            var backend_ssl = 'ssl verify none'
+            var backend_ssl = '';
             if (x.proto === 'https') {
                 bind += ' ssl crt /opt/triton/ssl/fullchain.pem';
-                backend_ssl = 'ssl verify none'
+                backend_ssl = ' ssl verify none'
             }
             var fe = [
                 'frontend fe' + i,
@@ -131,20 +142,30 @@ mdataGet('cloud.tritoncompute:portmap', function (s) {
             console.log(fe.join('\n') + '\n');
 
             var backend_port = '';
+            var sticky_cookie = '';
             if (!isNaN(x.backend.port)) {
                 backend_port = ':' + x.backend.port;
             }
+            if (STICKY_MODES.indexOf(x.proto) !== -1) {
+                sticky_cookie = [
+                    '\tcookie CLOUD-TRITONCOMPUTE-RS insert indirect ' +
+                        'nocache dynamic\n',
+                    '\tdynamic-cookie-key mysecretphrase\n'
+                ].join('');
+            }
             var be = [
                 'backend be' + i + '\n',
+                '\tmode ' + x.proto + '\n',
+                sticky_cookie,
                 '\tserver-template rs ' + max_rs,
                 x.backend.name + backend_port,
                 backend_ssl,
-                'check resolvers system init-addr none',
+                ' check resolvers system init-addr none',
                 '\n'
             ];
             // amazon.com:80 check resolvers system init-addr none'
 
-            console.log(be.join(' ') + '\n');
+            console.log(be.join(''));
             // generate frontend and backend configurations here
         });
     });

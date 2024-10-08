@@ -1,3 +1,6 @@
+<?xml version="1.0"?>
+<!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">
+
 <!--
     This Source Code Form is subject to the terms of the Mozilla Public
     License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,9 +10,6 @@
 <!--
     Copyright 2024 MNX Cloud, Inc.
 -->
-
-<?xml version="1.0"?>
-<!DOCTYPE service_bundle SYSTEM "/usr/share/lib/xml/dtd/service_bundle.dtd.1">
 
 <service_bundle type='manifest' name='triton/loadbalancer:boot'>
 <service name='site/postboot' type='service' version='1'>
