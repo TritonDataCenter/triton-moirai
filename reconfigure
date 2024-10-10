@@ -11,9 +11,10 @@
 set -o errexit
 set -o pipefail
 
-PATH=/opt/triton/lb/build/node/bin:$PATH
+TOP=$(cd "$(dirname "$0")/../"; pwd)
+PATH=/$TOP/build/node/bin:$PATH
 
-skel_config_dir=/opt/triton/lb/haproxy.cfg
+skel_config_dir="${TOP}/haproxy.cfg"
 real_config_dir=/opt/local/etc/haproxy.cfg
 self_signed_cert_dir=/opt/triton/ssl/self-signed
 
@@ -45,7 +46,7 @@ rsync -a "${skel_config_dir}/" "${candidate_config_dir}/"
 #                                                  #
 EOF
 
-    /opt/triton/lb/parser.js > "${candidate_config_dir}/100-services.cfg"
+    "${TOP}/parser.js" > "${candidate_config_dir}/100-services.cfg"
 
     if diff -qr "${real_config_dir}" "${candidate_config_dir}"; then
         echo 'Config is unchanged.'

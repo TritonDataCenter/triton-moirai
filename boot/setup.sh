@@ -30,7 +30,7 @@ fi
 
 
 cron_jobs=(
-    '* * * * * /opt/triton/lb/reconfigure'
+    '* * * * * /opt/triton/clb/reconfigure'
 )
 
 function fatal {
@@ -98,7 +98,7 @@ setup_haproxy_logs
 /opt/triton/dehydrated/dehydrated --register --accept-terms
 
 # Run immediately to prep the system.
-/opt/triton/lb/reconfigure
+/opt/triton/clb/reconfigure
 
 setup_crontab
 touch /var/tmp/.first-boot-done

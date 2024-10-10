@@ -18,8 +18,8 @@ ifeq ($(shell uname -s),SunOS)
         NODE_PREBUILT_IMAGE=a7199134-7e94-11ec-be67-db6f482136c2
 endif
 
-NAME = lb
-
+NAME = cloud-load-balancer
+DIR_NAME = clb
 #
 # Tools
 #
@@ -67,7 +67,7 @@ CLEAN_FILES += bits node_modules dehydrated dehydrated.tar.gz
 # triton-origin-x86_64-21.4.0
 BASE_IMAGE_UUID = 502eeef2-8267-489f-b19c-a206906f57ef
 BUILDIMAGE_NAME = $(NAME)
-BUILDIMAGE_DESC = TRITON-LOADBALANCER
+BUILDIMAGE_DESC = Triton Cloud Load Balancer
 BUILDIMAGE_PKGSRC = \
         openssl-1.1.1t \
         haproxy-2.6.1
@@ -84,14 +84,14 @@ all: dehydrated
 release: all
 	@echo "Building $(RELEASE_TARBALL)"
 	@mkdir -p $(RELSTAGEDIR)/root/opt/triton/boot
-	@mkdir -p $(RELSTAGEDIR)/root/opt/triton/$(NAME)/build
+	@mkdir -p $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/build
 	@mkdir -p ${RELSTAGEDIR}/root/opt/triton/dehydrated
 	@mkdir -p ${RELSTAGEDIR}/root/opt/triton/tls
 	@mkdir -p ${RELSTAGEDIR}/root/opt/local/etc/haproxy.cfg
 	@mkdir -p ${RELSTAGEDIR}/root/opt/custom/smf
 	@mkdir -p $(RELSTAGEDIR)/site
 	@touch $(RELSTAGEDIR)/site/.do-not-delete-me
-	cp -PR $(NODE_INSTALL) $(RELSTAGEDIR)/root/opt/triton/$(NAME)/build/node || true
+	cp -PR $(NODE_INSTALL) $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/build/node || true
 	cp -PR $(ROOT)/dehydrated/ $(RELSTAGEDIR)/root/opt/triton/dehydrated/
 	cp ${ROOT}/dehydrated.cfg ${RELSTAGEDIR}/root/opt/triton/dehydrated/config.overrides
 	cp ${ROOT}/dehydrated-hook ${RELSTAGEDIR}/root/opt/triton/dehydrated/override-hook
@@ -102,7 +102,7 @@ release: all
     $(ROOT)/haproxy.cfg \
     $(ROOT)/Makefile \
     $(ROOT)/package.json \
-    $(RELSTAGEDIR)/root/opt/triton/$(NAME)/
+    $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/
 	cp -R $(ROOT)/smf/* ${RELSTAGEDIR}/root/opt/custom/smf
 	cp -R ${ROOT}/haproxy.cfg/* ${RELSTAGEDIR}/root/opt/local/etc/haproxy.cfg
 	cp -R $(ROOT)/boot/* $(RELSTAGEDIR)/root/opt/triton/boot/
