@@ -11,6 +11,11 @@
 set -o errexit
 set -o pipefail
 
+if [[ -n "$TRACE" ]]; then
+    export PS4='[\D{%FT%TZ}] ${BASH_SOURCE}:${LINENO}: ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
+    set -o xtrace
+fi
+
 TOP=$(cd "$(dirname "$0")"; pwd)
 # SMF doesn't give us a sane path.
 PATH=/$TOP/build/node/bin:/usr/local/sbin:/usr/local/bin:/opt/local/sbin:/opt/local/bin:/usr/sbin:/usr/bin:/sbin
@@ -40,12 +45,12 @@ function ensure_haproxy {
 }
 
 function configure_haproxy {
-rsync -a "${skel_config_dir}/" "${candidate_config_dir}/"
-    cat << EOF > "${candidate_config_dir}/100-services.cfg"
-#                                                  #
-# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
-#                                                  #
-EOF
+    rsync -a "${skel_config_dir}/" "${candidate_config_dir}/"
+    {
+        printf '#                                                  #\n'
+        printf '# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #\n'
+        printf '#                                                  #\n'
+    } > "${candidate_config_dir}/100-services.cfg"
 
     "${TOP}/parser.js" > "${candidate_config_dir}/100-services.cfg"
 

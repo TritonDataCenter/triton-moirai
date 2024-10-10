@@ -157,7 +157,7 @@ mdataGet('cloud.tritoncompute:portmap', function (s) {
                 'backend be' + i + '\n',
                 '\tmode ' + x.proto + '\n',
                 sticky_cookie,
-                '\tserver-template rs ' + max_rs,
+                '\tserver-template rs ' + max_rs + ' ',
                 x.backend.name + backend_port,
                 backend_ssl,
                 ' check resolvers system init-addr none',
