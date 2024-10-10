@@ -85,14 +85,13 @@ release: all
 	@echo "Building $(RELEASE_TARBALL)"
 	@mkdir -p $(RELSTAGEDIR)/root/opt/triton/boot
 	@mkdir -p $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/build
-	@mkdir -p ${RELSTAGEDIR}/root/opt/triton/dehydrated
 	@mkdir -p ${RELSTAGEDIR}/root/opt/triton/tls
 	@mkdir -p ${RELSTAGEDIR}/root/opt/local/etc/haproxy.cfg
 	@mkdir -p ${RELSTAGEDIR}/root/opt/custom/smf
 	@mkdir -p $(RELSTAGEDIR)/site
 	@touch $(RELSTAGEDIR)/site/.do-not-delete-me
 	cp -PR $(NODE_INSTALL) $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/build/node || true
-	cp -PR $(ROOT)/dehydrated/ $(RELSTAGEDIR)/root/opt/triton/dehydrated/
+	cp -PR $(ROOT)/dehydrated/ $(RELSTAGEDIR)/root/opt/triton/
 	cp ${ROOT}/dehydrated.cfg ${RELSTAGEDIR}/root/opt/triton/dehydrated/config.overrides
 	cp ${ROOT}/dehydrated-hook ${RELSTAGEDIR}/root/opt/triton/dehydrated/override-hook
 	cp ${ROOT}/dhparam.pem ${RELSTAGEDIR}/root/opt/triton/tls
@@ -103,9 +102,9 @@ release: all
     $(ROOT)/Makefile \
     $(ROOT)/package.json \
     $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/
-	cp -R $(ROOT)/smf/* ${RELSTAGEDIR}/root/opt/custom/smf
-	cp -R ${ROOT}/haproxy.cfg/* ${RELSTAGEDIR}/root/opt/local/etc/haproxy.cfg
-	cp -R $(ROOT)/boot/* $(RELSTAGEDIR)/root/opt/triton/boot/
+	cp -PR $(ROOT)/smf/* ${RELSTAGEDIR}/root/opt/custom/smf/
+	cp -PR ${ROOT}/haproxy.cfg/* ${RELSTAGEDIR}/root/opt/local/etc/haproxy.cfg
+	cp -PR $(ROOT)/boot/* $(RELSTAGEDIR)/root/opt/triton/boot/
 	(cd $(RELSTAGEDIR) && $(TAR) -I pigz -cf $(ROOT)/$(RELEASE_TARBALL) root site)
 	@rm -rf $(RELSTAGEDIR)
 
