@@ -81,7 +81,7 @@ dehydrated:
 all: dehydrated
 
 .PHONY: release
-release: all
+release: all $(NODE_EXEC)
 	@echo "Building $(RELEASE_TARBALL)"
 	@mkdir -p $(RELSTAGEDIR)/root/opt/triton/boot
 	@mkdir -p $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/build
