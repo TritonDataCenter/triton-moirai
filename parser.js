@@ -130,7 +130,7 @@ mdataGet('cloud.tritoncompute:portmap', function (s) {
             var bind = '\tbind *:' + x.listen;
             var backend_ssl = '';
             if (x.proto === 'https') {
-                bind += ' ssl crt /opt/triton/ssl/fullchain.pem';
+                bind += ' ssl crt /opt/triton/ssl/default/fullchain.pem';
                 backend_ssl = ' ssl verify none'
             }
             var fe = [
