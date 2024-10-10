@@ -96,6 +96,7 @@ setup_haproxy_logs
 
 # Register dhydrated account
 /opt/triton/dehydrated/dehydrated --register --accept-terms
+svccfg import /opt/local/lib/svc/manifest/haproxy.xml
 
 # Run immediately to prep the system.
 /opt/triton/clb/reconfigure

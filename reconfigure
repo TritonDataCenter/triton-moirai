@@ -12,7 +12,8 @@ set -o errexit
 set -o pipefail
 
 TOP=$(cd "$(dirname "$0")"; pwd)
-PATH=/$TOP/build/node/bin:$PATH
+# SMF doesn't give us a sane path.
+PATH=/$TOP/build/node/bin:/usr/local/sbin:/usr/local/bin:/opt/local/sbin:/opt/local/bin:/usr/sbin:/usr/bin:/sbin
 
 skel_config_dir="${TOP}/haproxy.cfg"
 real_config_dir=/opt/local/etc/haproxy.cfg
@@ -61,7 +62,7 @@ EOF
 }
 
 function configure_tls {
-    cert_subject=$(./mdata-get cloud.tritoncompute:certificate_name)
+    cert_subject=$(mdata-get cloud.tritoncompute:certificate_name || true)
     (
         if [[ -n "$cert_subject" ]]; then
             cd /opt/triton/dehydrated
@@ -74,15 +75,6 @@ function configure_tls {
         else
             echo 'No certificate name present. Generating self-signed.'
             generate_self_signed_certificate
-            cd /opt/triton/ssl
-            ln -s self-signed default
-            cd self-signed
-            openssl ecparam -out privkey.pem -name prime256v1 -genkey
-            openssl req -new -days 3650 -nodes -x509 \
-                -subj "/CN=*" \
-                -key privkey.pem -out cert.pem
-            ln -s cert.pem chain.pem
-            ln -s chain.pem fullchain.pem
         fi
     )
 }
@@ -94,6 +86,7 @@ function generate_self_signed_certificate  {
     else
         echo "Generating TLS Self-signed Certificate"
         mkdir -p ${self_signed_cert_dir}
+        ln -s self-signed /opt/triton/tls/default
         /opt/local/bin/openssl req -x509 -nodes -subj '/CN=*' \
             -pkeyopt ec_paramgen_curve:prime256v1 \
             -pkeyopt ec_param_enc:named_curve \
