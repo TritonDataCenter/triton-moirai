@@ -25,14 +25,12 @@ fi
 
 if ! mdata-get cloud.tritoncompute:loadbalancer | grep -w -q true; then
     printf 'Metadata key cloud.tritoncompute:loadbalancer does not indicate load balancer\n'
-    exit 1
+    exit "${SMF_EXIT_ERR_FATAL:?}"
 fi
 
-cert_name=$(./mdata-get cloud.tritoncompute:certificate_name)
 
 cron_jobs=(
-    '16 1 * * * /opt/triton/dehydrated/dehydrated -c 2>&1 >> /var/log/triton-dehydrated.log'
-    '* * * * * /opt/triton/lb/genconfig'
+    '* * * * * /opt/triton/lb/reconfigure'
 )
 
 function fatal {
@@ -40,15 +38,15 @@ function fatal {
     exit 1
 }
 
-function create_crontab_entries {
-    cron_tmp="$(mktemp)"
-    crontab -l  > "${cron_tmp:?}"
-    printf '%s\n' "${cron_jobs[@]}" >> "${cron_tmp:?}"
-    crontab "${cron_tmp:?}"
-    rm -f "${cron_tmp:?}"
+function setup_crontab {
+    cron_tmp="$(mktemp /tmp/cron.XXXXXX)"
+    crontab -l  > "${cron_tmp}"
+    printf '%s\n' "${cron_jobs[@]}" >> "${cron_tmp}"
+    crontab "${cron_tmp}"
+    rm -f "${cron_tmp}"
 }
 
-function setup_haproxy_rsyslogd {
+function setup_haproxy_logs {
     #rsyslog was already set up by common setup- this will overwrite the
     # config and restart since we want haproxy to log locally.
 
@@ -94,49 +92,15 @@ HERE
     logadm -w /var/log/haproxy.log -C 5 -c -s 100m
 }
 
-function setup_tls_certificate() {
-    if [[ -f ${self_signed_dir}/privkey.pem && \
-          -f ${self_signed_dir}/cert.pem ]]; then
-        echo "TLS Certificate Exists"
-    else
-        echo "Generating TLS Self-signed Certificate"
-        mkdir -p ${self_signed_dir}
-        /opt/local/bin/openssl req -x509 -nodes -subj '/CN=*' \
-            -pkeyopt ec_paramgen_curve:prime256v1 \
-            -pkeyopt ec_param_enc:named_curve \
-            -newkey ec -keyout ${self_signed_dir}/privkey.pem \
-            -out ${self_signed_dir}/cert.pem -days 3650
-        cat ${self_signed_dir}/privkey.pem >> ${self_signed_dir}/cert.pem
-    fi
-}
+setup_haproxy_logs
 
+# Register dhydrated account
+/opt/triton/dehydrated/dehydrated --register --accept-terms
 
-if [[ -n "$cert_name" ]]; then
-    cd /opt/triton/dehydrated
-    mdata-get cloud.tritoncompute:certificate_name > domains.txt
-    ./dehydrated --register --accept-terms
-    ./dehydrated -c
+# Run immediately to prep the system.
+/opt/triton/lb/reconfigure
 
-    tmp=$(mktemp)
-    crontab -l > "$tmp"
-    create_crontab_entries
-else
-    echo 'No certificate name present. Generating self-signed.'
-    self_signed_dir=/opt/triton/ssl/self-signed
-    setup_tls_certificate
-    cd /opt/triton/ssl
-    ln -s self-signed default
-    cd self-signed
-    openssl ecparam -out privkey.pem -name prime256v1 -genkey
-    openssl req -new -days 3650 -nodes -x509 \
-        -subj "/C=US/ST=Denial/L=Springfield/O=Dis/CN=www.example.com" \
-        -key privkey.pem -out cert.pem
-    ln -s cert.pem chain.pem
-    ln -s chain.pem fullchain.pem
-fi
-
-setup_haproxy_rsyslogd
-
+setup_crontab
 touch /var/tmp/.first-boot-done
 
 exit "${SMF_EXIT_NODAEMON}"

@@ -85,14 +85,18 @@ release: all
 	@mkdir -p $(RELSTAGEDIR)/root/opt/triton/boot
 	@mkdir -p $(RELSTAGEDIR)/root/opt/triton/$(NAME)/build
 	@mkdir -p ${RELSTAGEDIR}/root/opt/triton/dehydrated
+	@mkdir -p ${RELSTAGEDIR}/root/opt/triton/tls
 	@mkdir -p ${RELSTAGEDIR}/root/opt/local/etc/haproxy.cfg
 	@mkdir -p ${RELSTAGEDIR}/root/opt/custom/smf
 	@mkdir -p $(RELSTAGEDIR)/site
 	@touch $(RELSTAGEDIR)/site/.do-not-delete-me
 	cp -PR $(NODE_INSTALL) $(RELSTAGEDIR)/root/opt/triton/$(NAME)/build/node || true
 	cp -PR $(ROOT)/dehydrated/ $(RELSTAGEDIR)/root/opt/triton/dehydrated/
-	cp -R ${ROOT}/dehydrated.cfg ${RELSTAGEDIR}/root/opt/triton/dehydrated/config.overrides
+	cp ${ROOT}/dehydrated.cfg ${RELSTAGEDIR}/root/opt/triton/dehydrated/config.overrides
+	cp ${ROOT}/dehydrated-hook ${RELSTAGEDIR}/root/opt/triton/dehydrated/override-hook
+	cp ${ROOT}/dhparam.pem ${RELSTAGEDIR}/root/opt/triton/tls
 	cp -r \
+    $(ROOT)/reconfigure \
     $(ROOT)/parser.js \
     $(ROOT)/haproxy.cfg \
     $(ROOT)/Makefile \
