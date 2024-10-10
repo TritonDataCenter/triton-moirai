@@ -90,7 +90,7 @@ release: all
 	@mkdir -p ${RELSTAGEDIR}/root/opt/custom/smf
 	@mkdir -p $(RELSTAGEDIR)/site
 	@touch $(RELSTAGEDIR)/site/.do-not-delete-me
-	cp -PR $(NODE_INSTALL) $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/build/node || true
+	cp -PR $(NODE_INSTALL) $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/build/node
 	cp -PR $(ROOT)/dehydrated/ $(RELSTAGEDIR)/root/opt/triton/
 	cp ${ROOT}/dehydrated.cfg ${RELSTAGEDIR}/root/opt/triton/dehydrated/config.overrides
 	cp ${ROOT}/dehydrated-hook ${RELSTAGEDIR}/root/opt/triton/dehydrated/override-hook

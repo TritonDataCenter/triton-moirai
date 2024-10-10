@@ -11,7 +11,7 @@
 set -o errexit
 set -o pipefail
 
-TOP=$(cd "$(dirname "$0")/../"; pwd)
+TOP=$(cd "$(dirname "$0")"; pwd)
 PATH=/$TOP/build/node/bin:$PATH
 
 skel_config_dir="${TOP}/haproxy.cfg"
