@@ -99,7 +99,6 @@ release: all $(NODE_EXEC)
     $(ROOT)/reconfigure \
     $(ROOT)/parser.js \
     $(ROOT)/haproxy.cfg \
-    $(ROOT)/Makefile \
     $(ROOT)/package.json \
     $(RELSTAGEDIR)/root/opt/triton/$(DIR_NAME)/
 	cp -PR $(ROOT)/smf/* ${RELSTAGEDIR}/root/opt/custom/smf/
