@@ -25,7 +25,7 @@ real_config_dir=/opt/local/etc/haproxy.cfg
 self_signed_cert_dir=/opt/triton/ssl/self-signed
 
 candidate_config_dir=$(mktemp -d /tmp/haproxy.cfg.XXXXXX)
-candidate_domains=$(mktemp -d /tmp/domains.txt.XXXXXX)
+candidate_domains=$(mktemp /tmp/domains.txt.XXXXXX)
 
 function ensure_haproxy {
     haproxy_state=$(svcs -Ho state haproxy)
@@ -80,6 +80,9 @@ function configure_tls {
         else
             echo 'No certificate name present. Generating self-signed.'
             generate_self_signed_certificate
+        fi
+        if [[ -f $candidate_domains ]]; then
+            rm -f "$candidate_domains"
         fi
     )
 }
