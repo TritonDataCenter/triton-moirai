@@ -76,7 +76,7 @@ function configure_tls {
             if ! diff -q ./domains.txt "$candidate_domains"; then
                 mv "$candidate_domains" domains.txt
             fi
-            ./dehydrated -c
+            ./dehydrated -c >> /var/log/triton-dehydrated.log 2>&1
         else
             echo 'No certificate name present. Generating self-signed.'
             generate_self_signed_certificate

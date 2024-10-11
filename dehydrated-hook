@@ -56,8 +56,8 @@ function deploy_cert {
 
     # We need a default symlink to CERTDIR so that haproxy doesn't need to know
     # the name.
-    if [[ -l ${CERTDIR}/../default ]]; then
-        ln -s ${CERTDIR} ${CERTDIR}/../default
+    if [[ -L ${CERTDIR}/../default ]]; then
+        ln -s "${CERTDIR}" "${CERTDIR}/../default"
     fi
 
     # Unlike other services, we will make every attempt to bring haproxy to
