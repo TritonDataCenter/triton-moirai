@@ -119,37 +119,3 @@ ifeq ($(shell uname -s),SunOS)
 endif
 include ./deps/eng/tools/mk/Makefile.smf.targ
 include ./deps/eng/tools/mk/Makefile.targ
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -28,10 +28,7 @@ var MAX_BACKENDS_HIGH = 1024;
 var STICKY_MODES = [
     'http',
     'https'
-]
-
-var frontends = {};
-var backends  = {};
+];
 
 var dbg = function (x) {
     console.error(JSON.stringify(x, null, 2));
@@ -72,7 +69,7 @@ var parseService = function (svcStr, r) {
         return svcObj;
     }
     r.push({string: svcStr, errors: ['Unparsable chunk']});
-    return;
+    return false;
 };
 
 mdataGet('cloud.tritoncompute:portmap', function (s) {
@@ -87,6 +84,7 @@ mdataGet('cloud.tritoncompute:portmap', function (s) {
                         if (x) {
                             return x;
                         }
+                        return false;
                     });
 
     // Validate fields of matcing objects.
@@ -115,8 +113,8 @@ mdataGet('cloud.tritoncompute:portmap', function (s) {
     });
     dbg({ ignored: removed});
     dbg({ validServices: services});
-    mdataGet('cloud.tritoncompute:max_rs', function (s) {
-        var max_rs = parseInt(s, 10);
+    mdataGet('cloud.tritoncompute:max_rs', function (rs) {
+        var max_rs = parseInt(rs, 10);
         if (isNaN(max_rs)) {
             max_rs = MAX_BACKENDS_LOW;
         }
@@ -131,13 +129,13 @@ mdataGet('cloud.tritoncompute:portmap', function (s) {
             var backend_ssl = '';
             if (x.proto === 'https') {
                 bind += ' ssl crt /opt/triton/ssl/default/fullchain.pem';
-                backend_ssl = ' ssl verify none'
+                backend_ssl = ' ssl verify none';
             }
             var fe = [
                 'frontend fe' + i,
                 '\tmode ' + x.proto,
                 bind,
-                '\tdefault_backend be' + i,
+                '\tdefault_backend be' + i
             ];
             console.log(fe.join('\n') + '\n');
 

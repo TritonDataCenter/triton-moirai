@@ -15,5 +15,13 @@
   "homepage": "https://github.com/TritonDataCenter/triton-moirai#readme",
   "dependencies": {
     "smfgen": "^1.2.0"
+  },
+  "devDependencies": {
+    "eslint": "4.13.1",
+    "eslint-config-prettier": "^2.9.0",
+    "eslint-plugin-joyent": "~2.0.0",
+    "eslint-plugin-prettier": "^2.6.0",
+    "prettier": "^1.11.1",
+    "tap": "^12.5.2"
   }
 }
