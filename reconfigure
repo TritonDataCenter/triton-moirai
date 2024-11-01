@@ -45,6 +45,17 @@ function ensure_haproxy {
 }
 
 function configure_haproxy {
+    # By default haproxy doesn't accept packets over 512b, so if we're scaling
+    # the maximum number of servers, we also need to scale the size of DNS
+    # response we can handle.
+    max_rs=$(mdata-get cloud.tritoncompute:max_rs)
+    # If max_rs isn't set in metadata, default to 32.
+    payload_size=$(( 16 * ${max_rs:=32} ))
+    # Use three spaces to align columns.
+    if ! grep -q "accepted_payload_size   ${payload_size}"; then
+        sed -i'' "s/accepted_payload_size .*/accepted_payload_size   $payload_size/" "${TOP}/haproxy.cfg/002-resolver.cfg"
+    fi
+
     rsync -a "${skel_config_dir}/" "${candidate_config_dir}/"
     {
         printf '#                                                  #\n'
