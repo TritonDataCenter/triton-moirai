@@ -27,6 +27,8 @@ self_signed_cert_dir=/opt/triton/ssl/self-signed
 candidate_config_dir=$(mktemp -d /tmp/haproxy.cfg.XXXXXX)
 candidate_domains=$(mktemp /tmp/domains.txt.XXXXXX)
 
+config_is_different=true
+
 function ensure_haproxy {
     haproxy_state=$(svcs -Ho state haproxy)
     case "$haproxy_state" in
@@ -35,9 +37,12 @@ function ensure_haproxy {
         maintenance)
             svcadm clear haproxy ;;
         online)
-            # Graceful restart of haproxy to avoid disrupting any connections.
-            # Don't let this fail so we don't get caught by errexit.
-            pkill -USR2 -c "$(svcs -Ho ctid haproxy)" haproxy || true;;
+            if [[ $config_is_different == true ]]; then
+                # Graceful restart of haproxy to avoid disrupting any connections.
+                # Don't let this fail so we don't get caught by errexit.
+                pkill -USR2 -c "$(svcs -Ho ctid haproxy)" haproxy || true
+            fi
+            ;;
         *)
             echo 'HAProxy non-actionable state: %s' "$haproxy_state"
             ;;
@@ -55,9 +60,11 @@ function configure_haproxy {
     "${TOP}/parser.js" > "${candidate_config_dir}/100-services.cfg"
 
     if diff -qr "${real_config_dir}" "${candidate_config_dir}"; then
+        config_is_different=false
         echo 'Config is unchanged.'
     else
         # Config is different. Continuing.
+        config_is_different=true
         if haproxy -c -f "${candidate_config_dir}"; then
             # Candidate config is good.
             rsync -a --delete "${candidate_config_dir}/" "${real_config_dir}/"
