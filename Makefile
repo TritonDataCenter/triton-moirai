@@ -33,12 +33,15 @@ JS_FILES        := parser.js
 ESLINT_FILES     = $(JS_FILES)
 JSSTYLE_FILES    = $(JS_FILES)
 JSSTYLE_FLAGS    = -o indent=4,doxygen,unparenthesized-return=0,leading-right-paren-ok=1
-SMF_MANIFESTS    = smf/manifests/postboot.xml
+SMF_MANIFESTS    = smf/manifests/postboot.xml smf/manifests/haproxy.xml
 
 ENGBLD_USE_BUILDIMAGE   = true
 ENGBLD_REQUIRE          := $(shell git submodule update --init deps/eng)
 include ./deps/eng/tools/mk/Makefile.defs
 TOP ?= $(error Unable to access eng.git submodule Makefiles.)
+
+include ./deps/eng/tools/mk/Makefile.ctf.defs
+include ./tools/mk/Makefile.haproxy.defs
 
 BUILD_PLATFORM  = 20210826T002459Z
 
@@ -69,8 +72,7 @@ BASE_IMAGE_UUID = 502eeef2-8267-489f-b19c-a206906f57ef
 BUILDIMAGE_NAME = $(NAME)
 BUILDIMAGE_DESC = Triton Cloud Load Balancer
 BUILDIMAGE_PKGSRC = \
-        openssl-1.1.1t \
-        haproxy-2.6.1
+        openssl-1.1.1t
 
 dehydrated:
 	mkdir $@
@@ -78,7 +80,7 @@ dehydrated:
 	gtar -zxvf dehydrated.tar.gz -C dehydrated
 
 .PHONY: all
-all: dehydrated
+all: dehydrated $(SMF_MANIFESTS) | $(HAPROXY_EXEC)
 
 .PHONY: release
 release: all $(NODE_EXEC)
@@ -118,4 +120,6 @@ ifeq ($(shell uname -s),SunOS)
         # include ./deps/eng/tools/mk/Makefile.agent_prebuilt.targ
 endif
 include ./deps/eng/tools/mk/Makefile.smf.targ
+include ./deps/eng/tools/mk/Makefile.ctf.targ
+include ./tools/mk/Makefile.haproxy.targ
 include ./deps/eng/tools/mk/Makefile.targ

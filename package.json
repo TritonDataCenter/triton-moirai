@@ -2,6 +2,7 @@
   "name": "triton-moirai",
   "version": "0.0.1",
   "description": "Triton Load Balancer",
+  "private": true,
   "main": "parser.js",
   "repository": {
     "type": "git",
@@ -13,9 +14,6 @@
     "url": "https://github.com/TritonDataCenter/triton-moirai/issues"
   },
   "homepage": "https://github.com/TritonDataCenter/triton-moirai#readme",
-  "dependencies": {
-    "smfgen": "^1.2.0"
-  },
   "devDependencies": {
     "eslint": "4.13.1",
     "eslint-config-prettier": "^2.9.0",

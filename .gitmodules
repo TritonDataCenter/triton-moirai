@@ -7,3 +7,6 @@
 [submodule "deps/javascriptlint"]
 	path = deps/javascriptlint
 	url = https://github.com/TritonDataCenter/javascriptlint.git
+[submodule "deps/haproxy-2.8"]
+	path = deps/haproxy-2.8
+	url = http://git.haproxy.org/git/haproxy-2.8.git

@@ -1,0 +1,34 @@
+# -*- mode: makefile -*-
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+#
+
+#
+# Copyright 2020 Joyent, Inc.
+# Copyright 2024 MNX Cloud, Inc.
+#
+
+#
+# Makefile.haproxy.targ: building and shipping a private haproxy
+#
+
+DEFINE  = -D_XPG6
+DEFINE += -DSO_REUSEPORT=0x2004
+
+BUILDFLAGS = \
+    -j8 V=1 TARGET=solaris DEFINE="$(DEFINE)" USE_OPENSSL=1 \
+    ADDLIB="-L/opt/local/lib -R/opt/local/lib"
+
+
+$(HAPROXY_EXEC): $(HAPROXY_SRC)/.git $(STAMP_CTF_TOOLS)
+	cd $(HAPROXY_SRC) && \
+	    $(MAKE) $(BUILDFLAGS) && \
+	    $(MAKE) install PREFIX=$(TOP)/$(HAPROXY_INSTALL)
+	$(CTFCONVERT) $(HAPROXY_EXEC)
+
+DISTCLEAN_FILES += $(HAPROXY_INSTALL)
+
+distclean::
+	-cd $(HAPROXY_SRC) && $(MAKE) clean
