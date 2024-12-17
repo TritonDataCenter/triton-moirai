@@ -25,6 +25,8 @@ case $1 in
         echo 'Foo.exAmpLe.Com' ;;
     cloud.tritoncompute:max_rs)
         echo '64' ;;
+    cloud.tritoncompute:metrics_acl)
+        echo '192.168.1.1/24 192.168.2.0/24,192.168.3.3' ;;
     *)
         exit 1
         ;;

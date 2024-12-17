@@ -89,6 +89,22 @@ pointing to the load balancer instance's CNS records. See the
 
 [2]: https://github.com/TritonDataCenter/triton-dehydrated?tab=readme-ov-file#how-to-use-inside-a-user-container-on-triton
 
+## Metrics polling
+
+If the `cloud.tritoncompute:metrics_acl` metadata key is not empty then the
+metrics endpoint will be enabled on port `8405`. The ACL must be an IP prefix
+(e.g., `198.51.100.0/24`). Multiple comma or space separated prefixes can be
+included.
+
+If the `cloud.tritoncompute:certificate_name` key is supplied then the metrics
+endpoint will be served via HTTPS. If the key is not supplied then the metrics
+encpoint will be served via HTTP.
+
+**Note:** The load balancer will respond to *all hosts*. on port `8405`. Hosts
+outside of the configured ACL will receive a `403` response. If you want the
+load balancer to not respond at all then you must also configure Cloud Firewall
+for the instance.
+
 ## Development
 
 Typically development is done by:
