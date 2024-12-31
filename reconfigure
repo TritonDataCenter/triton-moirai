@@ -62,7 +62,9 @@ function do_ensure_haproxy {
 function do_configure_acl {
     acl_file="${candidate_config_dir}/210-metrics_acl.txt"
     # shellcheck disable=SC2020
-    mdata-get cloud.tritoncompute:metrics_acl | tr ' ,' '\n\n' > "$acl_file"
+    if ! mdata-get cloud.tritoncompute:metrics_acl | tr ' ,' '\n\n' > "$acl_file" ; then
+        return
+    fi
     if [[ -f /opt/triton/ssl/default/fullchain.pem ]]; then
         bind_tls="ssl crt /opt/triton/ssl/default/fullchain.pem"
     fi
