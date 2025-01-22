@@ -1,0 +1,33 @@
+#!/bin/bash
+
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+#
+
+# Copyright 2024 MNX Cloud, Inc.
+
+case $1 in
+    cloud.tritoncompute:loadbalancer)
+        echo 'true' ;;
+    cloud.tritoncompute:portmap)
+        printf 'foo://99999:foo.svc.6d9cb2ba-039c-46f4-94dc-a9fcc34ebb52.us-central-1.cns.mnx.io:99999,'
+        printf 'bar://0:foo.svc.6d9cb2ba-039c-46f4-94dc-a9fcc34ebb52.us-central-1.cns.mnx.io:0,'
+        printf 'tcp://ssh:foo.svc.6d9cb2ba-039c-46f4-94dc-a9fcc34ebb52.us-central-1.cns.mnx.io:ssh,'
+        printf 'tCp://25:MaIl.svc.6d9cb2ba-039c-46f4-94dc-a9fcc34ebb52.us-central-1.cns.mnx.io,'
+        printf 'tCp://389:lOcAlHoSt.svc.6d9cb2ba-039c-46f4-94dc-a9fcc34ebb52.us-central-1.cns.mnx.io:1389,'
+        printf 'HtTp://80:LoCalHoSt.svc.6d9cb2ba-039c-46f4-94dc-a9fcc34ebb52.us-central-1.cns.mnx.io:8080,'
+        printf 'hTtPs://443:loCaLhOsT.svc.6d9cb2ba-039c-46f4-94dc-a9fcc34ebb52.us-central-1.cns.mnx.io:8443,'
+        printf 'ldaps://636:foo.svc.6d9cb2ba-039c-46f4-94dc-a9fcc34ebb52.us-central-1.cns.mnx.io:1636'
+        printf '\n' ;;
+    cloud.tritoncompute:certificate_name)
+        echo 'Foo.exAmpLe.Com' ;;
+    cloud.tritoncompute:max_rs)
+        echo '64' ;;
+    cloud.tritoncompute:metrics_acl)
+        echo '192.168.1.1/24 192.168.2.0/24,192.168.3.3' ;;
+    *)
+        exit 1
+        ;;
+esac

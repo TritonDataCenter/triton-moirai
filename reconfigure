@@ -1,0 +1,151 @@
+#!/bin/bash
+
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+#
+
+# Copyright 2024 MNX Cloud, Inc.
+
+set -o errexit
+set -o pipefail
+
+if [[ -n "$TRACE" ]]; then
+    export PS4='[\D{%FT%TZ}] ${BASH_SOURCE}:${LINENO}: ${FUNCNAME[0]:+${FUNCNAME[0]}(): }'
+    set -o xtrace
+fi
+
+TOP=$(cd "$(dirname "$0")"; pwd)
+# SMF doesn't give us a sane path.
+PATH=/$TOP/build/node/bin:/usr/local/sbin:/usr/local/bin:/opt/local/sbin:/opt/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+stat_f="-c %s"
+
+# For testing
+if [[ "$OSTYPE" != "solaris2.11" ]]; then
+    shopt -s expand_aliases
+    # shellcheck disable=SC2139
+    alias mdata-get="${TOP}/tools/mock-mdata-get"
+    stat_f="-f %z"
+fi
+
+skel_config_dir="${TOP}/haproxy.cfg"
+real_config_dir=/opt/local/etc/haproxy.cfg
+self_signed_cert_dir=/opt/triton/ssl/self-signed
+
+candidate_config_dir=$(mktemp -d /tmp/haproxy.cfg.XXXXXX)
+candidate_domains=$(mktemp /tmp/domains.txt.XXXXXX)
+
+config_is_different=true
+
+function do_ensure_haproxy {
+    haproxy_state=$(svcs -Ho state haproxy)
+    case "$haproxy_state" in
+        disabled)
+            svcadm enable -s haproxy ;;
+        maintenance)
+            svcadm clear haproxy ;;
+        online)
+            if [[ $config_is_different == true ]]; then
+                # Graceful restart of haproxy to avoid disrupting any connections.
+                # Don't let this fail so we don't get caught by errexit.
+                pkill -USR2 -c "$(svcs -Ho ctid haproxy)" haproxy || true
+            fi
+            ;;
+        *)
+            echo 'HAProxy non-actionable state: %s' "$haproxy_state"
+            ;;
+    esac
+}
+
+function do_configure_acl {
+    acl_file="${candidate_config_dir}/210-metrics_acl.txt"
+    # shellcheck disable=SC2020
+    if ! mdata-get cloud.tritoncompute:metrics_acl | tr ' ,' '\n\n' > "$acl_file" ; then
+        return
+    fi
+    if [[ -f /opt/triton/ssl/default/fullchain.pem ]]; then
+        bind_tls="ssl crt /opt/triton/ssl/default/fullchain.pem"
+    fi
+    fsize=$(stat "$stat_f" "$acl_file")
+    if (( fsize > 0 )); then
+cat << EOF > "${candidate_config_dir}/200-metrics.cfg"
+frontend __cloud_tritoncompute__metrics
+  bind *:8405 $bind_tls
+  mode http
+  http-request deny if !{ src -f 210-metrics_acl.txt }
+  http-request use-service prometheus-exporter if { path /metrics }
+  no log
+EOF
+    else
+        rm -f "${acl_file:?}"
+    fi
+}
+
+function do_configure_haproxy {
+    rsync -a "${skel_config_dir}/" "${candidate_config_dir}/"
+    {
+        printf '#                                                  #\n'
+        printf '# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #\n'
+        printf '#                                                  #\n'
+    } > "${candidate_config_dir}/100-services.cfg"
+
+    "${TOP}/parser.js" > "${candidate_config_dir}/100-services.cfg"
+    do_configure_acl
+
+    if diff -qr "${real_config_dir}" "${candidate_config_dir}"; then
+        config_is_different=false
+        echo 'Config is unchanged.'
+    else
+        # Config is different. Continuing.
+        config_is_different=true
+        if haproxy -c -f "${candidate_config_dir}"; then
+            # Candidate config is good.
+            rsync -a --delete "${candidate_config_dir}/" "${real_config_dir}/"
+        fi
+    fi
+    rm -rf "${candidate_config_dir:?}"
+}
+
+function do_configure_tls {
+    cert_subject=$(mdata-get cloud.tritoncompute:certificate_name || true)
+    (
+        if [[ -n "$cert_subject" ]]; then
+            cd /opt/triton/dehydrated
+            # Convert comma separated list to space separated.
+            tr ',' ' ' <<< "$cert_subject" > "$candidate_domains"
+            if ! diff -q ./domains.txt "$candidate_domains"; then
+                mv "$candidate_domains" domains.txt
+            fi
+            ./dehydrated -c >> /var/log/triton-dehydrated.log 2>&1
+        else
+            echo 'No certificate name present. Generating self-signed.'
+            do_generate_self_signed_certificate
+        fi
+        if [[ -f $candidate_domains ]]; then
+            rm -f "$candidate_domains"
+        fi
+    )
+}
+
+function do_generate_self_signed_certificate  {
+    if [[ -f ${self_signed_cert_dir}/privkey.pem && \
+          -f ${self_signed_cert_dir}/cert.pem ]]; then
+        echo "TLS Certificate Exists"
+    else
+        echo "Generating TLS Self-signed Certificate"
+        mkdir -p ${self_signed_cert_dir}
+        ln -s self-signed /opt/triton/tls/default
+        /opt/local/bin/openssl req -x509 -nodes -subj '/CN=*' \
+            -pkeyopt ec_paramgen_curve:prime256v1 \
+            -pkeyopt ec_param_enc:named_curve \
+            -newkey ec -keyout ${self_signed_cert_dir}/privkey.pem \
+            -out ${self_signed_cert_dir}/cert.pem -days 3650
+        cat ${self_signed_cert_dir}/privkey.pem >> ${self_signed_cert_dir}/cert.pem
+    fi
+}
+
+do_configure_tls
+do_configure_haproxy
+do_ensure_haproxy
