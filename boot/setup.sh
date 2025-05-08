@@ -7,7 +7,7 @@
 #
 
 #
-# Copyright 2024 MNX Cloud, Inc.
+# Copyright 2025 MNX Cloud, Inc.
 #
 
 set -o errexit
@@ -99,7 +99,7 @@ setup_haproxy_logs
 svccfg import /opt/local/lib/svc/manifest/haproxy.xml
 
 # Run immediately to prep the system.
-/opt/triton/clb/reconfigure
+RUST_LOG=debug /opt/triton/clb/reconfigure
 
 setup_crontab
 touch /var/tmp/.first-boot-done

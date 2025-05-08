@@ -5,7 +5,7 @@
 -->
 
 <!--
-    Copyright 2024 MNX Cloud, Inc.
+    Copyright 2025 MNX Cloud, Inc.
 -->
 
 # triton-moirai
@@ -39,6 +39,8 @@ Moirai supports the following keys:
 * `cloud.tritoncompute:certificate_name` - Comma separated list of certificate
   subjects. The first in the list will be the subject `CN`. The rest of the
   names will be Subject Alternate Names (SAN).
+* `cloud.tritoncompute:metrics_acl` - Space or comma-separated list of IP prefixes
+  (e.g., `198.51.100.0/24`) that are allowed to access the metrics endpoint on port `8405`.
 
 Metadata keys can be added post-provision. The load balancer will reconfigure
 itself shortly after the metadata is updated.
@@ -53,15 +55,23 @@ separated by commas or spaces.
 
 A service designation uses the following syntax:
 
-    <type>://<listen port>:<backend name>[:<backend port>]
+```
+<type>://<listen port>:<backend name>[:<backend port>]
+```
 
-* `type` - Must be one of `http`, `https`, or `tcp`.
+* `type` - Must be one of `http`, `https`, `httpss`, or `tcp`:
   * `http` - Configures a Layer-7 proxy using the HTTP protocol. The backend
     server(s) must not use SSL/TLS. `X-Forwarded-For` header will be added to
     requests.
   * `https` - Configures a Layer-7 proxy using the HTTP protocol. The backend
-    server(s) must use SSL/TLS. The backend certficate will not be verified. The
-    front end services will use a certificate issued by Let's Encrypt if
+    server(s) must NOT use SSL/TLS.
+    The front end services will use a certificate issued by Let's Encrypt if
+    the `cloud.tritoncompute:certificate_name` metadata key is also provided.
+    Otherwise, a self-signed certificate will be generated. `X-Forwarded-For`
+    header will be added to requests.
+  * `httpss` - Configures a Layer-7 proxy using the HTTP protocol. The backend
+    server(s) must use SSL/TLS. The backend certificate will not be verified.
+    The front end services will use a certificate issued by Let's Encrypt if
     the `cloud.tritoncompute:certificate_name` metadata key is also provided.
     Otherwise, a self-signed certificate will be generated. `X-Forwarded-For`
     header will be added to requests.
@@ -72,14 +82,16 @@ A service designation uses the following syntax:
   be a CNS name, but can be any fully qualified DNS domain name.
 * `backend port` - Optional. This designates the back end port that servers will
   be listening on. If provided, the back end will be configured to use A record
-  lookups. If a not provided then the back end will be configured to use SRV
+  lookups. If not provided, the back end will be configured to use SRV
   record lookup.
 
-Examples:
+### Examples
 
-    http://80:my-backend.svc.my-login.us-west-1.cns.example.com:80
-    https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443
-    tcp://636:my-backend.svc.my-login.us-west-1.cns.example.com
+```
+http://80:my-backend.svc.my-login.us-west-1.cns.example.com:80
+https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443
+tcp://636:my-backend.svc.my-login.us-west-1.cns.example.com
+```
 
 ## Certificate setup
 
@@ -88,6 +100,9 @@ pointing to the load balancer instance's CNS records. See the
 [`triton-dehydrated`][2] documentation for how to properly configure this.
 
 [2]: https://github.com/TritonDataCenter/triton-dehydrated?tab=readme-ov-file#how-to-use-inside-a-user-container-on-triton
+
+If no certificate name is provided in the metadata, a self-signed certificate will be
+generated automatically.
 
 ## Metrics polling
 
@@ -98,49 +113,56 @@ included.
 
 If the `cloud.tritoncompute:certificate_name` key is supplied then the metrics
 endpoint will be served via HTTPS. If the key is not supplied then the metrics
-encpoint will be served via HTTP.
+endpoint will be served via HTTP.
 
-**Note:** The load balancer will respond to *all hosts*. on port `8405`. Hosts
+**Note:** The load balancer will respond to *all hosts* on port `8405`. Hosts
 outside of the configured ACL will receive a `403` response. If you want the
 load balancer to not respond at all then you must also configure Cloud Firewall
 for the instance.
-
-## Development
-
-Typically development is done by:
-
-* making edits to a clone of triton-moirai.git on a Mac (likely Linux too, but
-  that's untested) or a SmartOS development zone,
-
-        git clone git@github.com:TritonDataCenter/triton-moirai.git
-        cd triton-moirai
-        git submodule update --init   # not necessary first time
-        vi
-
-* building:
-
-        make all
-        make check
-
-* then testing changes.
 
 ## Notes
 
 * Once a named certificate is used, the load balancer instance can't go back to
   a self-signed certificate. Continue to use the expired certificate or
   deploy a replacement loadbalancer.
+* The maximum number of backend servers is configurable from 32 up to 1024.
+* The application includes failsafes to prevent invalid configurations from being applied.
 
-## Testing
+## Development
 
-* Prerequisites:
-  * Set up fabrics on the Triton deployment.
-  * Ensure there are no existing NAT zones provisioned.
-  * Execute `sdcadm post-setup dev-headnode-prov`.
+### Code Structure
 
-* To sync local changes to a running COAL and run the test suite there use:
+- `src/lib.rs` - Contains core functionality, data structures, and helper functions
+- `src/certificates.rs` - TLS certificate management module
+- `src/reconfigure.rs` - Main application entry point (replaces the original `reconfigure` bash script)
 
-    make test-coal
+### Quick Start
 
-* To run tests while logged into a running VMAPI instance:
+```bash
+# Clone the repository
+git clone git@github.com:TritonDataCenter/triton-moirai.git
+cd triton-moirai
 
-    /opt/smartdc/vmapi/test/runtests
+# Build the project
+cargo build
+
+# Run tests
+cargo test
+
+# Build for production
+cargo build --release
+```
+
+## Smoke Testing
+
+```
+# Create Backends
+triton instance create -t triton.cns.services=web base-64-trunk g1.nano
+triton instance create -t triton.cns.services=web base-64-trunk g1.nano
+
+# Configure Backends
+triton instance list -H tag.triton.cns.services=web -o shortid | while read host; do triton ssh $host "pkgin -y in nginx && svcadm enable nginx && hostname > /opt/local/share/examples/nginx/html/hostname.txt && curl http://localhost/hostname.txt"& done;
+
+# Create Loadbalancer
+triton instance create -t triton.cns.services=frontend -m cloud.tritoncompute:portmap=tcp://80:web.svc.e50784dc-5b87-4f05-8487-f04c16b7d729.us-central-1.cns.mnx.io:80 -m cloud.tritoncompute:loadbalancer=true cloud-load-balancer g1.nano
+```

@@ -1,0 +1,17 @@
+#                                                  #
+# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
+#                                                  #
+{% for service in services %}
+frontend fe{{loop.index0}}
+	mode {{service.service_type.mode()}}
+	bind *:{{service.listen_port}}{% if service.frontend_ssl() %} ssl crt {{FULL_CHAIN_PEM_PATH}}{% endif %}
+	default_backend be{{loop.index0}}
+
+backend be{{loop.index0}}
+	mode {{service.service_type.mode()}}
+{%- if service.use_sticky_session() %}{#+ #}
+	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
+	dynamic-cookie-key {{service.dynamic_cookie_key()}}
+{%- endif %}
+	server-template rs {{max_backends}} {{service.backend_name}}{{service.backend_port_str()}}{% if service.backend_ssl() %} ssl verify none{% endif %} check resolvers system init-addr none
+{% endfor %}

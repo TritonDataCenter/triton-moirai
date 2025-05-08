@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-# Copyright 2024 MNX Cloud, Inc.
+# Copyright 2025 MNX Cloud, Inc.
 
 # shellcheck shell=bash
 
@@ -41,24 +41,33 @@ function ensure_haproxy {
     esac
 }
 
+function ensure_haproxy_links {
+    local certdir="${1}"
+
+    # We need a default symlink to CERTDIR so that haproxy doesn't need to know
+    # the name.
+    ln -sf "$(basename $certdir)" "$certdir/../default"
+
+    # We also need a properly named symlink for haproxy to find the private key
+    ln -sf privkey.pem "$certdir/fullchain.pem.key"
+}
+
 function deploy_cert {
     local domain="${1}" keyfile="${2}" certfile="${3}" fullchainfile="${4}" chainfile="${5}"
 
     if [[ -n "$OWNER" ]]; then
         chown -R "$OWNER" "${CERTDIR:?}"
     fi
+
+    # Ensure all expected symlinks exist
+    ensure_haproxy_links "$(dirname $fullchainfile)"
+
     # Really, we don't expect users to be installing anything beyond haproxy
     # that is already present. But we'll still leave the possibility, just
     # in case.
-    for service in "${SERVICES[@]:?}"; do
+    for service in "${SERVICES[@]}"; do
         restart_service "$service"
     done
-
-    # We need a default symlink to CERTDIR so that haproxy doesn't need to know
-    # the name.
-    if [[ -L ${CERTDIR}/../default ]]; then
-        ln -s "${CERTDIR}" "${CERTDIR}/../default"
-    fi
 
     # Unlike other services, we will make every attempt to bring haproxy to
     # online state if it isn't, for whatever reason.
@@ -69,6 +78,7 @@ function unchanged_cert {
     # shellcheck disable=SC2034
     local domain="${1}" keyfile="${2}" certfile="${3}" fullchainfile="${4}" chainfile="${5}"
 
+    ensure_haproxy_links "$(dirname $fullchainfile)"
     echo "Certificate unchanged."
 }
 
