@@ -50,12 +50,14 @@ pub const MDATA_GET_PATH: &str = "/usr/sbin/mdata-get";
     strum::IntoStaticStr,
     strum::EnumString,
     Debug,
+    Default,
     Hash,
     PartialEq,
     Eq,
 )]
 #[strum(serialize_all = "lowercase")]
 pub enum ServiceType {
+    #[default]
     Http,
     Https,
     Httpss,
@@ -99,12 +101,16 @@ impl ServiceType {
 ///   be listening on. If provided, the back end will be configured to use A record
 ///   lookups. If a not provided then the back end will be configured to use SRV
 ///   record lookup. (TODO Need to verify the SRV claim)
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, PartialEq, Eq, Hash)]
 pub struct Service {
     pub service_type: ServiceType,
     pub listen_port: u16,
     pub backend_name: String,
     pub backend_port: Option<u16>,
+    pub http_check_endpoint: Option<String>,
+    pub check_port: Option<u16>,
+    pub check_rise: Option<u16>,
+    pub check_fall: Option<u16>,
 }
 
 impl Service {
@@ -140,6 +146,16 @@ impl Service {
         self.hash(&mut hasher);
         format!("{:x}", hasher.finish())
     }
+
+    // Helper methods for http check
+    pub fn http_check(&self) -> bool {
+        self.http_check_endpoint.is_some()
+    }
+
+    // Helper methods for http check
+    pub fn http_check_endpoint(&self) -> String {
+        self.http_check_endpoint.clone().unwrap_or_default()
+    }
 }
 
 impl FromStr for Service {
@@ -155,6 +171,7 @@ impl FromStr for Service {
             listen_port,
             backend_name,
             backend_port,
+            ..Default::default()
         })
     }
 }
@@ -216,7 +233,7 @@ fn parse_and_validate_port(
 }
 
 #[derive(Template)]
-#[template(path = "100-services.cfg.jinja")]
+#[template(path = "100-services.cfg.askama")]
 pub struct Portmap {
     pub services: Vec<Service>,
     pub max_backends: usize,
@@ -224,7 +241,7 @@ pub struct Portmap {
 
 /// Template for metrics configuration
 #[derive(Template)]
-#[template(path = "200-metrics.cfg.jinja")]
+#[template(path = "200-metrics.cfg.askama")]
 pub struct MetricsConfig {
     pub use_ssl: bool,
 }
@@ -903,7 +920,7 @@ frontend fe1
 backend be1
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
-	dynamic-cookie-key 8cfd5654b73fd64d
+	dynamic-cookie-key 72e3f722f800f1e2
 	server-template rs 32 tlswebthing.svc.account_uuid.datacenter.cns.domain.zone:5443 ssl verify none check resolvers system init-addr none
 
 frontend fe2
@@ -926,6 +943,7 @@ backend be2
             listen_port: 443,
             backend_name: "some-app.svc.account_uuid.datacenter.cns.domain.zone".to_string(),
             backend_port: Some(8080),
+            ..Default::default()
         }];
 
         // Create a Portmap with the parsed services
@@ -950,7 +968,7 @@ frontend fe0
 backend be0
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
-	dynamic-cookie-key c3a0bdf5617a40b6
+	dynamic-cookie-key fb45d0519f7d2745
 	server-template rs 32 some-app.svc.account_uuid.datacenter.cns.domain.zone:8080 check resolvers system init-addr none
 "#;
         assert_eq!(rendered, expected)
@@ -964,6 +982,7 @@ backend be0
             listen_port: 443,
             backend_name: "secure-app.svc.account_uuid.datacenter.cns.domain.zone".to_string(),
             backend_port: Some(8443),
+            ..Default::default()
         }];
 
         // Create a Portmap with the parsed services
@@ -988,7 +1007,7 @@ frontend fe0
 backend be0
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
-	dynamic-cookie-key 2c110ee8e1fed00b
+	dynamic-cookie-key b7c573428363fdfa
 	server-template rs 32 secure-app.svc.account_uuid.datacenter.cns.domain.zone:8443 ssl verify none check resolvers system init-addr none
 "#;
         assert_eq!(rendered, expected)
@@ -1002,6 +1021,7 @@ backend be0
             listen_port: 80,
             backend_name: "web-app.svc.account_uuid.datacenter.cns.domain.zone".to_string(),
             backend_port: Some(8080),
+            ..Default::default()
         }];
 
         // Create a Portmap with the parsed services
@@ -1026,7 +1046,7 @@ frontend fe0
 backend be0
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
-	dynamic-cookie-key 55a2dd978d410d9c
+	dynamic-cookie-key 30deb6d5c2417d5a
 	server-template rs 32 web-app.svc.account_uuid.datacenter.cns.domain.zone:8080 check resolvers system init-addr none
 "#;
         assert_eq!(rendered, expected)
@@ -1040,6 +1060,7 @@ backend be0
             listen_port: 636,
             backend_name: "my-backend.svc.my-login.us-west-1.cns.example.com".to_string(),
             backend_port: None,
+            ..Default::default()
         }];
 
         // Create a Portmap with the parsed services
@@ -1159,5 +1180,52 @@ frontend __cloud_tritoncompute__metrics
   no log
 "#;
         assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn test_portmap_healthcheck_rendering() {
+        //let test_data =
+        //    "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456";
+        //let (services, _) = parse_services(test_data);
+
+        // Create a test service with None backend_port
+        let services = vec![Service {
+            service_type: ServiceType::Tcp,
+            listen_port: 12345,
+            backend_name: "service_name.svc.account_uuid.datacenter.cns.domain.zone".to_string(),
+            backend_port: Some(23456),
+            http_check_endpoint: Some("/healthz".to_string()),
+            check_port: Some(32150),
+            check_rise: Some(30),
+            check_fall: Some(1),
+            ..Default::default()
+        }];
+
+        // Create a Portmap with the parsed services
+        let portmap = Portmap {
+            services,
+            max_backends: MAX_BACKENDS_LOW,
+        };
+
+        // Render the template with the parsed services
+        let rendered = portmap.render().expect("Failed to render template");
+
+        // Check that the rendered template is exactly what we expect
+        let expected = r#"#                                                  #
+# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
+#                                                  #
+
+frontend fe0
+	mode tcp
+	bind *:12345
+	default_backend be0
+
+backend be0
+	mode tcp
+	option httpchk GET /healthz
+	http-check expect status 200
+	server-template rs 32 service_name.svc.account_uuid.datacenter.cns.domain.zone:23456 check port 32150 rise 30 fall 1 resolvers system init-addr none
+"#;
+        assert_eq!(rendered, expected)
     }
 }

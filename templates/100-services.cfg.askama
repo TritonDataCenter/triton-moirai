@@ -13,5 +13,15 @@ backend be{{loop.index0}}
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
 	dynamic-cookie-key {{service.dynamic_cookie_key()}}
 {%- endif %}
-	server-template rs {{max_backends}} {{service.backend_name}}{{service.backend_port_str()}}{% if service.backend_ssl() %} ssl verify none{% endif %} check resolvers system init-addr none
+{%- if service.http_check() %}{#+ #}
+	option httpchk GET {{service.http_check_endpoint()}}
+	http-check expect status 200
+{%- endif %}
+	server-template rs {{max_backends}} {{service.backend_name}}{{service.backend_port_str()}}
+		{%- if service.backend_ssl() %} ssl verify none{% endif %}
+		{#- #} check
+		{%- if let Some(port) = service.check_port %} port {{port}}{% endif %}
+		{%- if let Some(rise) = service.check_rise %} rise {{rise}}{% endif %}
+		{%- if let Some(fall) = service.check_fall %} fall {{fall}}{% endif %}
+		{#- #} resolvers system init-addr none
 {% endfor %}
