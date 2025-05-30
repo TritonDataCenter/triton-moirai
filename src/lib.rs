@@ -44,6 +44,9 @@ const HAPROXY_RESOLVER_CFG: &str = include_str!("../templates/002-resolver.cfg")
 // Path to mdata-get command for illumos
 pub const MDATA_GET_PATH: &str = "/usr/sbin/mdata-get";
 
+// Type alias for health check parameters tuple
+type HealthCheckParams = (Option<String>, Option<u16>, Option<u16>, Option<u16>);
+
 #[derive(
     strum::Display,
     strum::AsRefStr,
@@ -161,17 +164,58 @@ impl Service {
 impl FromStr for Service {
     type Err = Box<dyn StdError>;
 
+    /// Parse a service designation string into a Service object.
+    ///
+    /// # Format
+    ///
+    /// ```text
+    /// <type>://<listen port>:<backend name>[:<backend port>][{health check params}]
+    /// ```
+    ///
+    /// Where health check params use JSON-like syntax:
+    /// ```text
+    /// {check:/endpoint,port:9000,rise:2,fall:1}
+    /// ```
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// "http://80:web.example.com:8080"
+    /// "https://443:api.example.com:8443{check:/status,port:9000}"
+    /// "tcp://3306:db.example.com{check:/ping,rise:3,fall:2}"
+    /// ```
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        // Format: <type>://<listen port>:<backend name>[:<backend port>]
+        // Format: <type>://<listen port>:<backend name>[:<backend port>][{health check params}]
         let (service_type, remaining) = parse_service_type(s)?;
-        let (listen_port, backend_name, backend_port) = parse_service_parts(remaining)?;
+
+        // Check if there are health check parameters
+        let (service_part, health_params) = if let Some(brace_pos) = remaining.find('{') {
+            let service_part = &remaining[..brace_pos];
+            let health_part = &remaining[brace_pos..];
+            (service_part, Some(health_part))
+        } else {
+            (remaining, None)
+        };
+
+        let (listen_port, backend_name, backend_port) = parse_service_parts(service_part)?;
+
+        // Parse health check parameters if present
+        let (http_check_endpoint, check_port, check_rise, check_fall) =
+            if let Some(params) = health_params {
+                parse_health_check_params(params)?
+            } else {
+                (None, None, None, None)
+            };
 
         Ok(Service {
             service_type,
             listen_port,
             backend_name,
             backend_port,
-            ..Default::default()
+            http_check_endpoint,
+            check_port,
+            check_rise,
+            check_fall,
         })
     }
 }
@@ -232,6 +276,91 @@ fn parse_and_validate_port(
         })
 }
 
+/// Parse health check parameters from a JSON-like string.
+///
+/// This function parses health check configuration parameters embedded in service
+/// designations using a JSON-like syntax enclosed in curly braces.
+///
+/// # Supported Parameters
+///
+/// * `check` - HTTP endpoint path for health checks (e.g., "/healthz", "/status")
+/// * `port` - Port number for health check requests (overrides backend port)
+/// * `rise` - Number of consecutive successful checks before marking server as healthy
+/// * `fall` - Number of consecutive failed checks before marking server as unhealthy
+///
+/// # Format
+///
+/// ```text
+/// {check:/healthz,port:32150,rise:30,fall:1}
+/// ```
+///
+/// All parameters are optional. Parameters can be specified in any order.
+///
+/// # Returns
+///
+/// A tuple containing `(http_check_endpoint, check_port, check_rise, check_fall)`
+/// where each value is `Some(value)` if specified, or `None` if not provided.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// * The parameter format is invalid (missing colon separator)
+/// * Port values are not valid u16 integers
+/// * Rise/fall values are not valid u16 integers  
+/// * Unknown parameter names are encountered
+/// * The check endpoint is empty
+fn parse_health_check_params(s: &str) -> std::result::Result<HealthCheckParams, Box<dyn StdError>> {
+    // Remove the curly braces
+    let trimmed = s.trim_start_matches('{').trim_end_matches('}');
+
+    let mut http_check_endpoint = None;
+    let mut check_port = None;
+    let mut check_rise = None;
+    let mut check_fall = None;
+
+    // Split by comma and parse each key:value pair
+    for pair in trimmed.split(',') {
+        let parts: Vec<&str> = pair.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(format!("Invalid health check parameter format: {}", pair).into());
+        }
+
+        let key = parts[0].trim();
+        let value = parts[1].trim();
+
+        match key {
+            "check" => {
+                if value.is_empty() {
+                    return Err("Health check endpoint cannot be empty".into());
+                }
+                http_check_endpoint = Some(value.to_string());
+            }
+            "port" => {
+                check_port = Some(parse_and_validate_port(value, "health check")?);
+            }
+            "rise" => {
+                check_rise = Some(
+                    value
+                        .parse::<u16>()
+                        .map_err(|_| format!("Invalid rise value: {}", value))?,
+                );
+            }
+            "fall" => {
+                check_fall = Some(
+                    value
+                        .parse::<u16>()
+                        .map_err(|_| format!("Invalid fall value: {}", value))?,
+                );
+            }
+            _ => {
+                return Err(format!("Unknown health check parameter: {}", key).into());
+            }
+        }
+    }
+
+    Ok((http_check_endpoint, check_port, check_rise, check_fall))
+}
+
 #[derive(Template)]
 #[template(path = "100-services.cfg.askama")]
 pub struct Portmap {
@@ -253,35 +382,85 @@ pub struct RejectedService {
     pub errors: Vec<String>,
 }
 
-/// Parse a comma or space-separated list of service designations into a vector of Services
+/// Parse a comma or space-separated list of service designations into a vector of Services.
 ///
 /// Parses and validates each service designation in the input string and returns
 /// both a list of valid services and a list of rejected services with their errors.
+/// This function is brace-aware and will not split on delimiters that appear within
+/// health check parameter blocks (enclosed in curly braces).
+///
+/// # Arguments
+///
+/// * `input` - A string containing service definitions, potentially with health check parameters
 ///
 /// # Returns
 ///
 /// A tuple containing:
 /// * A vector of successfully parsed `Service` objects
 /// * A vector of `RejectedService` objects with errors for invalid entries
+///
+/// # Examples
+///
+/// ```text
+/// // Basic service without health checks
+/// "http://80:backend.example.com:8080"
+///
+/// // Service with health check parameters
+/// "http://80:backend.example.com:8080{check:/health,port:9000,rise:2,fall:1}"
+///
+/// // Multiple services (commas within braces are preserved)
+/// "http://80:web.example.com:8080{check:/status,port:8081}, tcp://3306:db.example.com"
+/// ```
 pub fn parse_services(input: &str) -> (Vec<Service>, Vec<RejectedService>) {
-    input
-        .split([',', ' '])
-        .filter(|s| !s.is_empty())
-        .map(|s| s.trim().replace('\n', ""))
-        .filter(|s| !s.is_empty())
-        .fold(
-            (Vec::new(), Vec::new()),
-            |(mut services, mut rejected), cleaned_str| {
-                match Service::from_str(&cleaned_str) {
-                    Ok(service) => services.push(service),
-                    Err(err) => rejected.push(RejectedService {
-                        string: cleaned_str,
-                        errors: vec![err.to_string()],
-                    }),
-                };
-                (services, rejected)
-            },
-        )
+    // We need to split carefully to not break up JSON-like health check parameters
+    let mut services = Vec::new();
+    let mut rejected = Vec::new();
+    let mut current = String::new();
+    let mut in_braces = false;
+
+    for ch in input.chars() {
+        match ch {
+            '{' => {
+                in_braces = true;
+                current.push(ch);
+            }
+            '}' => {
+                in_braces = false;
+                current.push(ch);
+            }
+            ',' | ' ' | '\n' => {
+                if in_braces {
+                    current.push(ch);
+                } else if !current.trim().is_empty() {
+                    // Process the current service
+                    let cleaned = current.trim().to_string();
+                    match Service::from_str(&cleaned) {
+                        Ok(service) => services.push(service),
+                        Err(err) => rejected.push(RejectedService {
+                            string: cleaned,
+                            errors: vec![err.to_string()],
+                        }),
+                    }
+                    current.clear();
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    // Don't forget the last service if there's no trailing delimiter
+    if !current.trim().is_empty() {
+        let cleaned = current.trim().to_string();
+        match Service::from_str(&cleaned) {
+            Ok(service) => services.push(service),
+            Err(err) => rejected.push(RejectedService {
+                string: cleaned,
+                errors: vec![err.to_string()],
+            }),
+        }
+    }
+
+    (services, rejected)
 }
 
 /// Parse the max_rs metadata value and apply constraints
@@ -1184,22 +1363,12 @@ frontend __cloud_tritoncompute__metrics
 
     #[test]
     fn test_portmap_healthcheck_rendering() {
-        //let test_data =
-        //    "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456";
-        //let (services, _) = parse_services(test_data);
+        let test_data =
+            "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456{check:/healthz,port:32150,rise:30,fall:1}";
+        let (services, rejected) = parse_services(test_data);
 
-        // Create a test service with None backend_port
-        let services = vec![Service {
-            service_type: ServiceType::Tcp,
-            listen_port: 12345,
-            backend_name: "service_name.svc.account_uuid.datacenter.cns.domain.zone".to_string(),
-            backend_port: Some(23456),
-            http_check_endpoint: Some("/healthz".to_string()),
-            check_port: Some(32150),
-            check_rise: Some(30),
-            check_fall: Some(1),
-            ..Default::default()
-        }];
+        assert_eq!(rejected.len(), 0, "Should have no rejected services");
+        assert_eq!(services.len(), 1, "Should have parsed one service");
 
         // Create a Portmap with the parsed services
         let portmap = Portmap {
@@ -1227,5 +1396,75 @@ backend be0
 	server-template rs 32 service_name.svc.account_uuid.datacenter.cns.domain.zone:23456 check port 32150 rise 30 fall 1 resolvers system init-addr none
 "#;
         assert_eq!(rendered, expected)
+    }
+
+    #[test]
+    fn test_parse_health_check_params() {
+        // Test full parameters
+        let result = parse_health_check_params("{check:/healthz,port:32150,rise:30,fall:1}");
+        assert!(result.is_ok());
+        let (check, port, rise, fall) = result.unwrap();
+        assert_eq!(check, Some("/healthz".to_string()));
+        assert_eq!(port, Some(32150));
+        assert_eq!(rise, Some(30));
+        assert_eq!(fall, Some(1));
+
+        // Test partial parameters
+        let result = parse_health_check_params("{check:/health,port:8080}");
+        assert!(result.is_ok());
+        let (check, port, rise, fall) = result.unwrap();
+        assert_eq!(check, Some("/health".to_string()));
+        assert_eq!(port, Some(8080));
+        assert_eq!(rise, None);
+        assert_eq!(fall, None);
+
+        // Test only check endpoint
+        let result = parse_health_check_params("{check:/}");
+        assert!(result.is_ok());
+        let (check, port, rise, fall) = result.unwrap();
+        assert_eq!(check, Some("/".to_string()));
+        assert_eq!(port, None);
+        assert_eq!(rise, None);
+        assert_eq!(fall, None);
+
+        // Test invalid format
+        let result = parse_health_check_params("{check}");
+        assert!(result.is_err());
+
+        // Test unknown parameter
+        let result = parse_health_check_params("{check:/health,unknown:value}");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_service_parsing_with_health_checks() {
+        // HTTP service with health check
+        let service =
+            Service::from_str("http://80:backend.example.com:8080{check:/status,port:8081}");
+        assert!(service.is_ok());
+        let service = service.unwrap();
+        assert_eq!(service.service_type, ServiceType::Http);
+        assert_eq!(service.listen_port, 80);
+        assert_eq!(service.backend_name, "backend.example.com");
+        assert_eq!(service.backend_port, Some(8080));
+        assert_eq!(service.http_check_endpoint, Some("/status".to_string()));
+        assert_eq!(service.check_port, Some(8081));
+
+        // TCP service with health check on different port
+        let service = Service::from_str(
+            "tcp://3306:db.example.com:3306{check:/ping,port:9000,rise:2,fall:3}",
+        );
+        assert!(service.is_ok());
+        let service = service.unwrap();
+        assert_eq!(service.service_type, ServiceType::Tcp);
+        assert_eq!(service.check_rise, Some(2));
+        assert_eq!(service.check_fall, Some(3));
+
+        // Service without health check (backward compatibility)
+        let service = Service::from_str("https://443:api.example.com:8443");
+        assert!(service.is_ok());
+        let service = service.unwrap();
+        assert_eq!(service.http_check_endpoint, None);
+        assert_eq!(service.check_port, None);
     }
 }

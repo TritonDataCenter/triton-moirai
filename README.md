@@ -56,7 +56,7 @@ separated by commas or spaces.
 A service designation uses the following syntax:
 
 ```
-<type>://<listen port>:<backend name>[:<backend port>]
+<type>://<listen port>:<backend name>[:<backend port>][{health check params}]
 ```
 
 * `type` - Must be one of `http`, `https`, `httpss`, or `tcp`:
@@ -84,13 +84,61 @@ A service designation uses the following syntax:
   be listening on. If provided, the back end will be configured to use A record
   lookups. If not provided, the back end will be configured to use SRV
   record lookup.
+* `health check params` - Optional. JSON-like syntax for configuring health checks
+  (see Health Check Configuration section below).
 
-### Examples
+### Health Check Configuration
+
+Health checks can be configured using a JSON-like syntax appended to service designations. The parameters are enclosed in curly braces `{}` and use comma-separated key:value pairs.
+
+#### Supported Parameters
+
+* `check` - HTTP endpoint path for health checks (e.g., `/healthz`, `/status`, `/ping`)
+* `port` - Port number for health check requests (overrides the backend port)
+* `rise` - Number of consecutive successful checks before marking server as healthy (default: HAProxy default)
+* `fall` - Number of consecutive failed checks before marking server as unhealthy (default: HAProxy default)
+
+#### Health Check Syntax
 
 ```
+{check:/endpoint,port:9000,rise:2,fall:1}
+```
+
+All parameters are optional and can be specified in any order. If `port` is not specified, health checks will use the same port as the backend service.
+
+#### Health Check Examples
+
+```
+# HTTP service with health check on same port
+http://80:web.example.com:8080{check:/healthz}
+
+# HTTPS service with health check on different port
+https://443:api.example.com:8443{check:/status,port:9000}
+
+# TCP service with health check parameters
+tcp://3306:db.example.com:3306{check:/ping,rise:3,fall:2}
+
+# Service with all health check parameters
+http://80:app.example.com:8080{check:/health,port:8081,rise:5,fall:2}
+```
+
+### Basic Service Examples
+
+```
+# Basic HTTP service
 http://80:my-backend.svc.my-login.us-west-1.cns.example.com:80
+
+# Basic HTTPS service
 https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443
+
+# Basic TCP service (using SRV records)
 tcp://636:my-backend.svc.my-login.us-west-1.cns.example.com
+
+# HTTP service with health check
+http://80:my-backend.svc.my-login.us-west-1.cns.example.com:80{check:/healthz}
+
+# HTTPS service with comprehensive health check configuration
+https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443{check:/status,port:9000,rise:3,fall:1}
 ```
 
 ## Certificate setup
@@ -163,6 +211,9 @@ triton instance create -t triton.cns.services=web base-64-trunk g1.nano
 # Configure Backends
 triton instance list -H tag.triton.cns.services=web -o shortid | while read host; do triton ssh $host "pkgin -y in nginx && svcadm enable nginx && hostname > /opt/local/share/examples/nginx/html/hostname.txt && curl http://localhost/hostname.txt"& done;
 
-# Create Loadbalancer
+# Create Loadbalancer (basic)
 triton instance create -t triton.cns.services=frontend -m cloud.tritoncompute:portmap=tcp://80:web.svc.e50784dc-5b87-4f05-8487-f04c16b7d729.us-central-1.cns.mnx.io:80 -m cloud.tritoncompute:loadbalancer=true cloud-load-balancer g1.nano
+
+# Create Loadbalancer with health checks
+triton instance create -t triton.cns.services=frontend -m cloud.tritoncompute:portmap=http://80:web.svc.e50784dc-5b87-4f05-8487-f04c16b7d729.us-central-1.cns.mnx.io:80{check:/hostname.txt,rise:2,fall:1} -m cloud.tritoncompute:loadbalancer=true cloud-load-balancer g1.nano
 ```
