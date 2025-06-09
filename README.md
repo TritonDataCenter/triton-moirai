@@ -40,7 +40,9 @@ Moirai supports the following keys:
   subjects. The first in the list will be the subject `CN`. The rest of the
   names will be Subject Alternate Names (SAN).
 * `cloud.tritoncompute:metrics_acl` - Space or comma-separated list of IP prefixes
-  (e.g., `198.51.100.0/24`) that are allowed to access the metrics endpoint on port `8405`.
+  (e.g., `198.51.100.0/24`) that are allowed to access the metrics endpoint.
+* `cloud.tritoncompute:metrics_port` - Port number for the metrics endpoint.
+  Defaults to `8405` if not specified.
 
 Metadata keys can be added post-provision. The load balancer will reconfigure
 itself shortly after the metadata is updated.
@@ -155,15 +157,19 @@ generated automatically.
 ## Metrics polling
 
 If the `cloud.tritoncompute:metrics_acl` metadata key is not empty then the
-metrics endpoint will be enabled on port `8405`. The ACL must be an IP prefix
+metrics endpoint will be enabled. The ACL must be an IP prefix
 (e.g., `198.51.100.0/24`). Multiple comma or space separated prefixes can be
 included.
+
+The metrics endpoint listens on port `8405` by default. This can be customized
+by setting the `cloud.tritoncompute:metrics_port` metadata key to a different
+port number (must be between 1-65534).
 
 If the `cloud.tritoncompute:certificate_name` key is supplied then the metrics
 endpoint will be served via HTTPS. If the key is not supplied then the metrics
 endpoint will be served via HTTP.
 
-**Note:** The load balancer will respond to *all hosts* on port `8405`. Hosts
+**Note:** The load balancer will respond to *all hosts* on the metrics port. Hosts
 outside of the configured ACL will receive a `403` response. If you want the
 load balancer to not respond at all then you must also configure Cloud Firewall
 for the instance.

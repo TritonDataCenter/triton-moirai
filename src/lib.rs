@@ -19,6 +19,7 @@ pub mod certificates;
 // Port and backend limits
 pub const MIN_PORT: u16 = 1;
 pub const MAX_PORT: u16 = 65534;
+pub const DEFAULT_METRICS_PORT: u16 = 8405;
 pub const MAX_BACKENDS_LOW: usize = 32;
 pub const MAX_BACKENDS_HIGH: usize = 1024;
 
@@ -26,6 +27,7 @@ pub const MAX_BACKENDS_HIGH: usize = 1024;
 pub const PORTMAP_KEY: &str = "cloud.tritoncompute:portmap";
 pub const MAX_RS_KEY: &str = "cloud.tritoncompute:max_rs";
 pub const METRICS_ACL_KEY: &str = "cloud.tritoncompute:metrics_acl";
+pub const METRICS_PORT_KEY: &str = "cloud.tritoncompute:metrics_port";
 pub const CERT_NAME_KEY: &str = "cloud.tritoncompute:certificate_name";
 pub const LOADBALANCER_KEY: &str = "cloud.tritoncompute:loadbalancer";
 
@@ -373,6 +375,7 @@ pub struct Portmap {
 #[template(path = "200-metrics.cfg.askama")]
 pub struct MetricsConfig {
     pub use_ssl: bool,
+    pub metrics_port: u16,
 }
 
 /// Struct to track services that couldn't be parsed or validated
@@ -628,9 +631,17 @@ pub fn configure_acl(config_dir: &Path) -> Result<bool> {
         return Ok(false);
     }
 
+    // Get metrics port from metadata, default to DEFAULT_METRICS_PORT if not provided or invalid
+    let metrics_port_data = mdata_get(METRICS_PORT_KEY)?;
+    let metrics_port =
+        parse_and_validate_port(&metrics_port_data, "metrics").unwrap_or(DEFAULT_METRICS_PORT);
+
     // Create metrics configuration
     let use_ssl = Path::new(FULL_CHAIN_PEM_PATH).exists();
-    let metrics_config = MetricsConfig { use_ssl };
+    let metrics_config = MetricsConfig {
+        use_ssl,
+        metrics_port,
+    };
     let rendered_config = metrics_config
         .render()
         .context("Failed to render metrics configuration template")?;
@@ -1324,7 +1335,10 @@ backend be0
     #[test]
     fn test_metrics_config_rendering_with_ssl() {
         // Test metrics config with SSL enabled
-        let metrics_config = MetricsConfig { use_ssl: true };
+        let metrics_config = MetricsConfig {
+            use_ssl: true,
+            metrics_port: DEFAULT_METRICS_PORT,
+        };
         let rendered = metrics_config
             .render()
             .expect("Failed to render metrics config");
@@ -1344,7 +1358,10 @@ frontend __cloud_tritoncompute__metrics
     #[test]
     fn test_metrics_config_rendering_without_ssl() {
         // Test metrics config without SSL
-        let metrics_config = MetricsConfig { use_ssl: false };
+        let metrics_config = MetricsConfig {
+            use_ssl: false,
+            metrics_port: DEFAULT_METRICS_PORT,
+        };
         let rendered = metrics_config
             .render()
             .expect("Failed to render metrics config");
@@ -1353,6 +1370,29 @@ frontend __cloud_tritoncompute__metrics
 #                                                  #
 frontend __cloud_tritoncompute__metrics
   bind *:8405
+  mode http
+  http-request deny if !{ src -f 210-metrics_acl.txt }
+  http-request use-service prometheus-exporter if { path /metrics }
+  no log
+"#;
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn test_metrics_config_rendering_custom_port() {
+        // Test metrics config with custom port
+        let metrics_config = MetricsConfig {
+            use_ssl: false,
+            metrics_port: 9090,
+        };
+        let rendered = metrics_config
+            .render()
+            .expect("Failed to render metrics config");
+        let expected = r#"#                                                  #
+# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
+#                                                  #
+frontend __cloud_tritoncompute__metrics
+  bind *:9090
   mode http
   http-request deny if !{ src -f 210-metrics_acl.txt }
   http-request use-service prometheus-exporter if { path /metrics }

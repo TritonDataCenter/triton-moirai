@@ -2,7 +2,7 @@
 # ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
 #                                                  #
 frontend __cloud_tritoncompute__metrics
-  bind *:8405{% if use_ssl %} ssl crt {{FULL_CHAIN_PEM_PATH}}{% endif %}
+  bind *:{{metrics_port}}{% if use_ssl %} ssl crt {{FULL_CHAIN_PEM_PATH}}{% endif %}
   mode http
   http-request deny if !{ src -f 210-metrics_acl.txt }
   http-request use-service prometheus-exporter if { path /metrics }
