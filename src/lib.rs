@@ -400,7 +400,6 @@ pub struct Portmap {
 #[derive(Template)]
 #[template(path = "200-metrics.cfg.askama")]
 pub struct MetricsConfig {
-    pub use_ssl: bool,
     pub metrics_port: u16,
 }
 
@@ -663,11 +662,7 @@ pub fn configure_acl(config_dir: &Path) -> Result<bool> {
         parse_and_validate_port(&metrics_port_data, "metrics").unwrap_or(DEFAULT_METRICS_PORT);
 
     // Create metrics configuration
-    let use_ssl = Path::new(FULL_CHAIN_PEM_PATH).exists();
-    let metrics_config = MetricsConfig {
-        use_ssl,
-        metrics_port,
-    };
+    let metrics_config = MetricsConfig { metrics_port };
     let rendered_config = metrics_config
         .render()
         .context("Failed to render metrics configuration template")?;
@@ -1383,33 +1378,9 @@ backend be0
     }
 
     #[test]
-    fn test_metrics_config_rendering_with_ssl() {
-        // Test metrics config with SSL enabled
-        let metrics_config = MetricsConfig {
-            use_ssl: true,
-            metrics_port: DEFAULT_METRICS_PORT,
-        };
-        let rendered = metrics_config
-            .render()
-            .expect("Failed to render metrics config");
-        let expected = r#"#                                                  #
-# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
-#                                                  #
-frontend __cloud_tritoncompute__metrics
-  bind *:8405 ssl crt /opt/triton/tls/default/fullchain.pem
-  mode http
-  http-request deny if !{ src -f 210-metrics_acl.txt }
-  http-request use-service prometheus-exporter if { path /metrics }
-  no log
-"#;
-        assert_eq!(rendered, expected);
-    }
-
-    #[test]
-    fn test_metrics_config_rendering_without_ssl() {
+    fn test_metrics_config_rendering() {
         // Test metrics config without SSL
         let metrics_config = MetricsConfig {
-            use_ssl: false,
             metrics_port: DEFAULT_METRICS_PORT,
         };
         let rendered = metrics_config
@@ -1431,10 +1402,7 @@ frontend __cloud_tritoncompute__metrics
     #[test]
     fn test_metrics_config_rendering_custom_port() {
         // Test metrics config with custom port
-        let metrics_config = MetricsConfig {
-            use_ssl: false,
-            metrics_port: 9090,
-        };
+        let metrics_config = MetricsConfig { metrics_port: 9090 };
         let rendered = metrics_config
             .render()
             .expect("Failed to render metrics config");

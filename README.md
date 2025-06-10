@@ -171,10 +171,6 @@ The metrics endpoint listens on port `8405` by default. This can be customized
 by setting the `cloud.tritoncompute:metrics_port` metadata key to a different
 port number (must be between 1-65534).
 
-If the `cloud.tritoncompute:certificate_name` key is supplied then the metrics
-endpoint will be served via HTTPS. If the key is not supplied then the metrics
-endpoint will be served via HTTP.
-
 **Note:** The load balancer will respond to *all hosts* on the metrics port. Hosts
 outside of the configured ACL will receive a `403` response. If you want the
 load balancer to not respond at all then you must also configure Cloud Firewall
