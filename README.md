@@ -61,18 +61,18 @@ A service designation uses the following syntax:
 <type>://<listen port>:<backend name>[:<backend port>][{health check params}]
 ```
 
-* `type` - Must be one of `http`, `https`, `httpss`, or `tcp`:
+* `type` - Must be one of `http`, `https`, `https-http`, or `tcp`:
   * `http` - Configures a Layer-7 proxy using the HTTP protocol. The backend
     server(s) must not use SSL/TLS. `X-Forwarded-For` header will be added to
     requests.
   * `https` - Configures a Layer-7 proxy using the HTTP protocol. The backend
-    server(s) must NOT use SSL/TLS.
+    server(s) must use SSL/TLS. The backend certificate will not be verified.
     The front end services will use a certificate issued by Let's Encrypt if
     the `cloud.tritoncompute:certificate_name` metadata key is also provided.
     Otherwise, a self-signed certificate will be generated. `X-Forwarded-For`
     header will be added to requests.
-  * `httpss` - Configures a Layer-7 proxy using the HTTP protocol. The backend
-    server(s) must use SSL/TLS. The backend certificate will not be verified.
+  * `https-http` - Configures a Layer-7 proxy using the HTTP protocol. The backend
+    server(s) must NOT use SSL/TLS.
     The front end services will use a certificate issued by Let's Encrypt if
     the `cloud.tritoncompute:certificate_name` metadata key is also provided.
     Otherwise, a self-signed certificate will be generated. `X-Forwarded-For`

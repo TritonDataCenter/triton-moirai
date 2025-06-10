@@ -65,7 +65,8 @@ pub enum ServiceType {
     #[default]
     Http,
     Https,
-    Httpss,
+    #[strum(serialize = "https-http")]
+    HttpsHttp,
     Tcp,
 }
 
@@ -81,18 +82,18 @@ impl ServiceType {
 }
 
 /// Represents a mapping for haproxy from `cloud.tritoncompute:portmap`
-/// * `service_type` - Must be one of `http`, `https`, or `tcp`.
+/// * `service_type` - Must be one of `http`, `https`, `https-http`, or `tcp`.
 ///   * `http` - Configures a Layer-7 proxy using the HTTP protocol. The backend
 ///     server(s) must not use SSL/TLS. `X-Forwarded-For` header will be added to
 ///     requests.
 ///   * `https` - Configures a Layer-7 proxy using the HTTP protocol. The backend
-///     server(s) must NOT use SSL/TLS.
+///     server(s) must use SSL/TLS. The backend certificate will not be verified.
 ///     The front end services will use a certificate issued by Let's Encrypt if
 ///     the `cloud.tritoncompute:certificate_name` metadata key is also provided.
 ///     Otherwise, a self-signed certificate will be generated. `X-Forwarded-For`
 ///     header will be added to requests.
-///   * `httpss` - Configures a Layer-7 proxy using the HTTP protocol. The backend
-///     server(s) must use SSL/TLS. The backend certificate will not be verified.
+///   * `https-http` - Configures a Layer-7 proxy using the HTTP protocol. The backend
+///     server(s) must NOT use SSL/TLS.
 ///     The front end services will use a certificate issued by Let's Encrypt if
 ///     the `cloud.tritoncompute:certificate_name` metadata key is also provided.
 ///     Otherwise, a self-signed certificate will be generated. `X-Forwarded-For`
@@ -131,18 +132,21 @@ impl Service {
     pub fn use_sticky_session(&self) -> bool {
         matches!(
             self.service_type,
-            ServiceType::Http | ServiceType::Https | ServiceType::Httpss
+            ServiceType::Http | ServiceType::Https | ServiceType::HttpsHttp
         )
     }
 
     // Helper method to determine if service needs SSL configuration
     pub fn frontend_ssl(&self) -> bool {
-        matches!(self.service_type, ServiceType::Https | ServiceType::Httpss)
+        matches!(
+            self.service_type,
+            ServiceType::Https | ServiceType::HttpsHttp
+        )
     }
 
     // Helper method to determine if service needs SSL configuration
     pub fn backend_ssl(&self) -> bool {
-        matches!(self.service_type, ServiceType::Httpss)
+        matches!(self.service_type, ServiceType::Https)
     }
 
     // Helper method to generate a dynamic_cookie_key
@@ -995,7 +999,7 @@ pub mod tests {
 
     #[test]
     fn test_parse_services() {
-        let test_data = "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456,httpss://443:tlswebthing.svc.account_uuid.datacenter.cns.domain.zone:5443,tcp://80:webthing.svc.account_uuid.datacenter.cns.domain.zone:31799";
+        let test_data = "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456,https://443:tlswebthing.svc.account_uuid.datacenter.cns.domain.zone:5443,tcp://80:webthing.svc.account_uuid.datacenter.cns.domain.zone:31799";
 
         // Parse the test data into a vector of services
         let (services, rejected) = parse_services(test_data);
@@ -1016,7 +1020,7 @@ pub mod tests {
         assert_eq!(services[0].backend_port, Some(23456));
 
         // Verify the second service
-        assert_eq!(services[1].service_type.to_string(), "httpss");
+        assert_eq!(services[1].service_type.to_string(), "https");
         assert_eq!(services[1].listen_port, 443);
         assert_eq!(
             services[1].backend_name,
@@ -1076,8 +1080,11 @@ pub mod tests {
 
     #[test]
     fn test_portmap_rendering() {
-        let test_data = "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456,httpss://443:tlswebthing.svc.account_uuid.datacenter.cns.domain.zone:5443,tcp://80:webthing.svc.account_uuid.datacenter.cns.domain.zone:31799";
+        let test_data = "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456,https://443:tlswebthing.svc.account_uuid.datacenter.cns.domain.zone:5443,tcp://80:webthing.svc.account_uuid.datacenter.cns.domain.zone:31799";
         let (services, _) = parse_services(test_data);
+
+        // Get the dynamic cookie key for the HTTPS service (index 1)
+        let https_cookie_key = services[1].dynamic_cookie_key();
 
         // Create a Portmap with the parsed services
         let portmap = Portmap {
@@ -1089,7 +1096,8 @@ pub mod tests {
         let rendered = portmap.render().expect("Failed to render template");
 
         // Check that the rendered template is exactly what we expect
-        let expected = r#"#                                                  #
+        let expected = format!(
+            r#"#                                                  #
 # ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
 #                                                  #
 
@@ -1110,7 +1118,7 @@ frontend fe1
 backend be1
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
-	dynamic-cookie-key 72e3f722f800f1e2
+	dynamic-cookie-key {}
 	server-template rs 32 tlswebthing.svc.account_uuid.datacenter.cns.domain.zone:5443 ssl verify none check resolvers system init-addr none
 
 frontend fe2
@@ -1121,21 +1129,26 @@ frontend fe2
 backend be2
 	mode tcp
 	server-template rs 32 webthing.svc.account_uuid.datacenter.cns.domain.zone:31799 check resolvers system init-addr none
-"#;
+"#,
+            https_cookie_key
+        );
         assert_eq!(rendered, expected)
     }
 
     #[test]
-    fn test_portmap_rendering_with_https() {
-        // Create a test service with HTTPS protocol on frontend only
+    fn test_portmap_rendering_with_https_http() {
+        // Create a test service with HTTPS-HTTP protocol (TLS termination)
         let services = vec![Service {
-            service_type: ServiceType::Https,
+            service_type: ServiceType::HttpsHttp,
             listen_port: 443,
             backend_name: "some-app.svc.account_uuid.datacenter.cns.domain.zone".to_string(),
             backend_port: Some(8080),
             ..Default::default()
         }];
 
+        // Get the dynamic cookie key for this service
+        let cookie_key = services[0].dynamic_cookie_key();
+
         // Create a Portmap with the parsed services
         let portmap = Portmap {
             services,
@@ -1146,7 +1159,8 @@ backend be2
         let rendered = portmap.render().expect("Failed to render template");
 
         // Check that the rendered template includes SSL configuration
-        let expected = r#"#                                                  #
+        let expected = format!(
+            r#"#                                                  #
 # ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
 #                                                  #
 
@@ -1158,23 +1172,28 @@ frontend fe0
 backend be0
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
-	dynamic-cookie-key fb45d0519f7d2745
+	dynamic-cookie-key {}
 	server-template rs 32 some-app.svc.account_uuid.datacenter.cns.domain.zone:8080 check resolvers system init-addr none
-"#;
+"#,
+            cookie_key
+        );
         assert_eq!(rendered, expected)
     }
 
     #[test]
-    fn test_portmap_rendering_with_httpss() {
+    fn test_portmap_rendering_with_https() {
         // Create a test service with HTTPS protocol on both sides
         let services = vec![Service {
-            service_type: ServiceType::Httpss,
+            service_type: ServiceType::Https,
             listen_port: 443,
             backend_name: "secure-app.svc.account_uuid.datacenter.cns.domain.zone".to_string(),
             backend_port: Some(8443),
             ..Default::default()
         }];
 
+        // Get the dynamic cookie key for this service
+        let cookie_key = services[0].dynamic_cookie_key();
+
         // Create a Portmap with the parsed services
         let portmap = Portmap {
             services,
@@ -1185,7 +1204,8 @@ backend be0
         let rendered = portmap.render().expect("Failed to render template");
 
         // Check that the rendered template includes SSL configuration
-        let expected = r#"#                                                  #
+        let expected = format!(
+            r#"#                                                  #
 # ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
 #                                                  #
 
@@ -1197,9 +1217,11 @@ frontend fe0
 backend be0
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
-	dynamic-cookie-key b7c573428363fdfa
+	dynamic-cookie-key {}
 	server-template rs 32 secure-app.svc.account_uuid.datacenter.cns.domain.zone:8443 ssl verify none check resolvers system init-addr none
-"#;
+"#,
+            cookie_key
+        );
         assert_eq!(rendered, expected)
     }
 
@@ -1214,6 +1236,9 @@ backend be0
             ..Default::default()
         }];
 
+        // Get the dynamic cookie key for this service
+        let cookie_key = services[0].dynamic_cookie_key();
+
         // Create a Portmap with the parsed services
         let portmap = Portmap {
             services,
@@ -1224,7 +1249,8 @@ backend be0
         let rendered = portmap.render().expect("Failed to render template");
 
         // Check that the rendered template includes sticky session but no SSL
-        let expected = r#"#                                                  #
+        let expected = format!(
+            r#"#                                                  #
 # ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
 #                                                  #
 
@@ -1236,9 +1262,11 @@ frontend fe0
 backend be0
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
-	dynamic-cookie-key 30deb6d5c2417d5a
+	dynamic-cookie-key {}
 	server-template rs 32 web-app.svc.account_uuid.datacenter.cns.domain.zone:8080 check resolvers system init-addr none
-"#;
+"#,
+            cookie_key
+        );
         assert_eq!(rendered, expected)
     }
 
@@ -1501,7 +1529,7 @@ backend be0
         assert_eq!(service.check_fall, Some(3));
 
         // Service without health check (backward compatibility)
-        let service = Service::from_str("https://443:api.example.com:8443");
+        let service = Service::from_str("https-http://443:api.example.com:8443");
         assert!(service.is_ok());
         let service = service.unwrap();
         assert_eq!(service.http_check_endpoint, None);
