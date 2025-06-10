@@ -49,6 +49,9 @@ pub const MDATA_GET_PATH: &str = "/usr/sbin/mdata-get";
 // Type alias for health check parameters tuple
 type HealthCheckParams = (Option<String>, Option<u16>, Option<u16>, Option<u16>);
 
+// TODO: Alternative naming options for review:
+// - "https-insecure" instead of "https+insecure"
+// - "https-noverify" instead of "https+insecure"
 #[derive(
     strum::Display,
     strum::AsRefStr,
@@ -65,6 +68,8 @@ pub enum ServiceType {
     #[default]
     Http,
     Https,
+    #[strum(serialize = "https+insecure")]
+    HttpsInsecure,
     #[strum(serialize = "https-http")]
     HttpsHttp,
     Tcp,
@@ -82,12 +87,18 @@ impl ServiceType {
 }
 
 /// Represents a mapping for haproxy from `cloud.tritoncompute:portmap`
-/// * `service_type` - Must be one of `http`, `https`, `https-http`, or `tcp`.
+/// * `service_type` - Must be one of `http`, `https`, `https+insecure`, `https-http`, or `tcp`.
 ///   * `http` - Configures a Layer-7 proxy using the HTTP protocol. The backend
 ///     server(s) must not use SSL/TLS. `X-Forwarded-For` header will be added to
 ///     requests.
 ///   * `https` - Configures a Layer-7 proxy using the HTTP protocol. The backend
-///     server(s) must use SSL/TLS. The backend certificate will not be verified.
+///     server(s) must use SSL/TLS. The backend certificate WILL be verified.
+///     The front end services will use a certificate issued by Let's Encrypt if
+///     the `cloud.tritoncompute:certificate_name` metadata key is also provided.
+///     Otherwise, a self-signed certificate will be generated. `X-Forwarded-For`
+///     header will be added to requests.
+///   * `https+insecure` - Configures a Layer-7 proxy using the HTTP protocol. The backend
+///     server(s) must use SSL/TLS. The backend certificate will NOT be verified.
 ///     The front end services will use a certificate issued by Let's Encrypt if
 ///     the `cloud.tritoncompute:certificate_name` metadata key is also provided.
 ///     Otherwise, a self-signed certificate will be generated. `X-Forwarded-For`
@@ -132,7 +143,10 @@ impl Service {
     pub fn use_sticky_session(&self) -> bool {
         matches!(
             self.service_type,
-            ServiceType::Http | ServiceType::Https | ServiceType::HttpsHttp
+            ServiceType::Http
+                | ServiceType::Https
+                | ServiceType::HttpsInsecure
+                | ServiceType::HttpsHttp
         )
     }
 
@@ -140,12 +154,20 @@ impl Service {
     pub fn frontend_ssl(&self) -> bool {
         matches!(
             self.service_type,
-            ServiceType::Https | ServiceType::HttpsHttp
+            ServiceType::Https | ServiceType::HttpsInsecure | ServiceType::HttpsHttp
         )
     }
 
-    // Helper method to determine if service needs SSL configuration
+    // Helper method to determine if service needs backend SSL
     pub fn backend_ssl(&self) -> bool {
+        matches!(
+            self.service_type,
+            ServiceType::Https | ServiceType::HttpsInsecure
+        )
+    }
+
+    // Helper method to determine if backend SSL should verify certificates
+    pub fn backend_ssl_verify(&self) -> bool {
         matches!(self.service_type, ServiceType::Https)
     }
 
@@ -1080,7 +1102,7 @@ pub mod tests {
 
     #[test]
     fn test_portmap_rendering() {
-        let test_data = "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456,https://443:tlswebthing.svc.account_uuid.datacenter.cns.domain.zone:5443,tcp://80:webthing.svc.account_uuid.datacenter.cns.domain.zone:31799";
+        let test_data = "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456,https+insecure://443:tlswebthing.svc.account_uuid.datacenter.cns.domain.zone:5443,tcp://80:webthing.svc.account_uuid.datacenter.cns.domain.zone:31799";
         let (services, _) = parse_services(test_data);
 
         // Get the dynamic cookie key for the HTTPS service (index 1)
@@ -1182,7 +1204,7 @@ backend be0
 
     #[test]
     fn test_portmap_rendering_with_https() {
-        // Create a test service with HTTPS protocol on both sides
+        // Create a test service with HTTPS protocol on both sides with certificate verification
         let services = vec![Service {
             service_type: ServiceType::Https,
             listen_port: 443,
@@ -1203,7 +1225,7 @@ backend be0
         // Render the template with the parsed services
         let rendered = portmap.render().expect("Failed to render template");
 
-        // Check that the rendered template includes SSL configuration
+        // Check that the rendered template includes SSL configuration with certificate verification
         let expected = format!(
             r#"#                                                  #
 # ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
@@ -1218,7 +1240,7 @@ backend be0
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
 	dynamic-cookie-key {}
-	server-template rs 32 secure-app.svc.account_uuid.datacenter.cns.domain.zone:8443 ssl verify none check resolvers system init-addr none
+	server-template rs 32 secure-app.svc.account_uuid.datacenter.cns.domain.zone:8443 ssl check resolvers system init-addr none
 "#,
             cookie_key
         );
@@ -1534,5 +1556,118 @@ backend be0
         let service = service.unwrap();
         assert_eq!(service.http_check_endpoint, None);
         assert_eq!(service.check_port, None);
+    }
+
+    #[test]
+    fn test_portmap_rendering_with_https_insecure() {
+        // Create a test service with HTTPS+insecure protocol (HTTPS both ends, no verification)
+        let services = vec![Service {
+            service_type: ServiceType::HttpsInsecure,
+            listen_port: 443,
+            backend_name: "insecure-app.svc.account_uuid.datacenter.cns.domain.zone".to_string(),
+            backend_port: Some(8443),
+            ..Default::default()
+        }];
+
+        // Get the dynamic cookie key for this service
+        let cookie_key = services[0].dynamic_cookie_key();
+
+        // Create a Portmap with the parsed services
+        let portmap = Portmap {
+            services,
+            max_backends: MAX_BACKENDS_LOW,
+        };
+
+        // Render the template with the parsed services
+        let rendered = portmap.render().expect("Failed to render template");
+
+        // Check that the rendered template includes SSL configuration with verify none
+        let expected = format!(
+            r#"#                                                  #
+# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
+#                                                  #
+
+frontend fe0
+	mode http
+	bind *:443 ssl crt /opt/triton/tls/default/fullchain.pem
+	default_backend be0
+
+backend be0
+	mode http
+	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
+	dynamic-cookie-key {}
+	server-template rs 32 insecure-app.svc.account_uuid.datacenter.cns.domain.zone:8443 ssl verify none check resolvers system init-addr none
+"#,
+            cookie_key
+        );
+        assert_eq!(rendered, expected)
+    }
+
+    #[test]
+    fn test_service_type_ssl_methods() {
+        // Test the new SSL-related helper methods
+        let http_service = Service {
+            service_type: ServiceType::Http,
+            ..Default::default()
+        };
+        let https_service = Service {
+            service_type: ServiceType::Https,
+            ..Default::default()
+        };
+        let https_insecure_service = Service {
+            service_type: ServiceType::HttpsInsecure,
+            ..Default::default()
+        };
+        let https_http_service = Service {
+            service_type: ServiceType::HttpsHttp,
+            ..Default::default()
+        };
+        let tcp_service = Service {
+            service_type: ServiceType::Tcp,
+            ..Default::default()
+        };
+
+        // Test frontend_ssl()
+        assert!(!http_service.frontend_ssl());
+        assert!(https_service.frontend_ssl());
+        assert!(https_insecure_service.frontend_ssl());
+        assert!(https_http_service.frontend_ssl());
+        assert!(!tcp_service.frontend_ssl());
+
+        // Test backend_ssl()
+        assert!(!http_service.backend_ssl());
+        assert!(https_service.backend_ssl());
+        assert!(https_insecure_service.backend_ssl());
+        assert!(!https_http_service.backend_ssl());
+        assert!(!tcp_service.backend_ssl());
+
+        // Test backend_ssl_verify()
+        assert!(!http_service.backend_ssl_verify());
+        assert!(https_service.backend_ssl_verify());
+        assert!(!https_insecure_service.backend_ssl_verify());
+        assert!(!https_http_service.backend_ssl_verify());
+        assert!(!tcp_service.backend_ssl_verify());
+
+        // Test use_sticky_session()
+        assert!(http_service.use_sticky_session());
+        assert!(https_service.use_sticky_session());
+        assert!(https_insecure_service.use_sticky_session());
+        assert!(https_http_service.use_sticky_session());
+        assert!(!tcp_service.use_sticky_session());
+    }
+
+    #[test]
+    fn test_parse_https_insecure_service() {
+        // Test parsing the new https+insecure service type
+        let service = Service::from_str("https+insecure://443:backend.example.com:8443");
+        assert!(service.is_ok());
+        let service = service.unwrap();
+        assert_eq!(service.service_type, ServiceType::HttpsInsecure);
+        assert_eq!(service.listen_port, 443);
+        assert_eq!(service.backend_name, "backend.example.com");
+        assert_eq!(service.backend_port, Some(8443));
+
+        // Test that it serializes correctly
+        assert_eq!(service.service_type.to_string(), "https+insecure");
     }
 }

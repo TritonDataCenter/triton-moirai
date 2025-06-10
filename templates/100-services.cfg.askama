@@ -18,7 +18,12 @@ backend be{{loop.index0}}
 	http-check expect status 200
 {%- endif %}
 	server-template rs {{max_backends}} {{service.backend_name}}{{service.backend_port_str()}}
-		{%- if service.backend_ssl() %} ssl verify none{% endif %}
+		{%- if service.backend_ssl() %}
+			{#- #} ssl
+			{%- if !service.backend_ssl_verify() %}
+				{#- #} verify none
+			{%- endif %}
+		{%- endif %}
 		{#- #} check
 		{%- if let Some(port) = service.check_port %} port {{port}}{% endif %}
 		{%- if let Some(rise) = service.check_rise %} rise {{rise}}{% endif %}
