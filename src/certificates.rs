@@ -46,8 +46,8 @@ use crate::{mdata_get, CERT_NAME_KEY};
 
 // Constants for certificate directories
 pub const SELF_SIGNED_CERT_DIR: &str = "/opt/triton/tls/self-signed";
-pub const SELF_SIGNED_KEY: &str = "/opt/triton/tls/self-signed/privkey.pem";
-pub const SELF_SIGNED_CERT: &str = "/opt/triton/tls/self-signed/cert.pem";
+pub const SELF_SIGNED_KEY: &str = "/opt/triton/tls/self-signed/fullchain.pem.key";
+pub const SELF_SIGNED_CERT: &str = "/opt/triton/tls/self-signed/fullchain.pem";
 pub const DEFAULT_CERT_DIR: &str = "/opt/triton/tls/default";
 pub const DEHYDRATED_DIR: &str = "/opt/triton/dehydrated";
 
@@ -128,27 +128,6 @@ pub fn configure_tls() -> Result<bool> {
     file.write_all(&output.stderr)
         .context("Failed to write stderr to log file")?;
 
-    // Check if default cert directory symlink exists and create if needed
-    let default_dir = Path::new(DEFAULT_CERT_DIR);
-    let parent_dir = default_dir
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Unable to get parent directory of default cert dir"))?;
-
-    // Find a domain directory to link to
-    if !default_dir.exists() && !default_dir.is_symlink() {
-        let entries =
-            fs::read_dir(parent_dir).context("Failed to read SSL certificate directory")?;
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() && path != default_dir {
-                // Found a directory to link to
-                crate::ensure_cert_symlink(&path, default_dir)?;
-                break;
-            }
-        }
-    }
-
     info!("Certificates were updated.");
     Ok(true)
 }
@@ -217,22 +196,6 @@ pub fn generate_self_signed_certificate() -> Result<bool> {
             stderr
         ));
     }
-
-    // Copy private key to certificate file for HAProxy
-    let privkey_content =
-        fs::read_to_string(privkey_path).context("Failed to read private key file")?;
-    let cert_content = fs::read_to_string(cert_path).context("Failed to read certificate file")?;
-
-    fs::write(cert_path, format!("{}{}", cert_content, privkey_content))
-        .context("Failed to write combined certificate file")?;
-
-    // Create fullchain.pem for compatibility with Let's Encrypt cert structure
-    let fullchain_path = self_signed_dir.join("fullchain.pem");
-    fs::write(
-        &fullchain_path,
-        format!("{}{}", cert_content, privkey_content),
-    )
-    .context("Failed to write fullchain.pem file")?;
 
     info!("Successfully generated self-signed certificate.");
     Ok(true)

@@ -26,7 +26,6 @@ ENGBLD_REQUIRE          := $(shell git submodule update --init deps/eng)
 include ./deps/eng/tools/mk/Makefile.defs
 include ./deps/eng/tools/mk/Makefile.rust.defs
 TOP ?= $(error Unable to access eng.git submodule Makefiles.)
-export RUST_BACKTRACE = 1
 
 BUILD_PLATFORM  = 20210826T002459Z
 include ./deps/eng/tools/mk/Makefile.smf.defs
