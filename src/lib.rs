@@ -49,9 +49,6 @@ pub const MDATA_GET_PATH: &str = "/usr/sbin/mdata-get";
 // Type alias for health check parameters tuple
 type HealthCheckParams = (Option<String>, Option<u16>, Option<u16>, Option<u16>);
 
-// TODO: Alternative naming options for review:
-// - "https-insecure" instead of "https+insecure"
-// - "https-noverify" instead of "https+insecure"
 #[derive(
     strum::Display,
     strum::AsRefStr,
@@ -924,8 +921,11 @@ pub fn ensure_haproxy(config_changed: bool) -> Result<()> {
             }
         }
         _ => {
-            // TODO Should this be an error?
-            warn!("HAProxy non-actionable state: {:?}", service.state);
+            // As of this commit, this must be one of: Degraded, Offline, Legacy, Uninitialized
+            return Err(anyhow::anyhow!(
+                "HAProxy non-actionable state: {:?}",
+                service.state
+            ));
         }
     }
 
