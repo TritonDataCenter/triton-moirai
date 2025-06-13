@@ -47,6 +47,7 @@ BUILDIMAGE_NAME = $(NAME)
 BUILDIMAGE_DESC = Triton Cloud Load Balancer
 BUILDIMAGE_PKGSRC = \
         openssl-1.1.1t \
+        mozilla-rootcerts \
         haproxy-2.6.1
 
 dehydrated:

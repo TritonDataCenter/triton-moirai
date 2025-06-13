@@ -20,7 +20,9 @@ backend be{{loop.index0}}
 	server-template rs {{max_backends}} {{service.backend_name}}{{service.backend_port_str()}}
 		{%- if service.backend_ssl() %}
 			{#- #} ssl
-			{%- if !service.backend_ssl_verify() %}
+			{%- if service.backend_ssl_verify() %}
+				{#- #} verify required ca-file /opt/local/share/mozilla-rootcerts/cacert.pem
+			{%- else %}
 				{#- #} verify none
 			{%- endif %}
 		{%- endif %}

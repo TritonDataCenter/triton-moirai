@@ -208,20 +208,111 @@ cargo test
 # Build for production
 cargo build --release
 ```
+### LetsEncrypt Testing
 
-## Smoke Testing
+If you need to do a lot of iteration on the dehydrated LetsEncrypt integration
+you can add a couple of lines to `dehydrated.cfg` to point it at the staging endpoint:
 
 ```
+CA=letsencrypt-test
+PREFERRED_CHAIN='(STAGING) Pretend Pear X1'
+```
+
+## Verification Testing
+
+### Importing a Jenkins build
+
+On the headnode:
+```bash
+sdc-imgadm import -S https://updates.tritondatacenter.com?channel=experimental ${JENKINS_BUILD_UUID?}
+```
+
+### Basic Setup (Backend Instances)
+
+```bash
+# Get your account UUID for CNS names
+UUID=$(triton account get | awk '/^id:/{print $2}')
+CNS_DOMAIN=us-central-1.cns.mnx.io
+REAL_DOMAIN=example.com
+IMAGE=cloud-load-balancer
+PACKAGE=g1.nano
+
 # Create Backends
-triton instance create -t triton.cns.services=web base-64-trunk g1.nano
-triton instance create -t triton.cns.services=web base-64-trunk g1.nano
+triton instance create -t triton.cns.services=web base-64-trunk ${PACKAGE?}
+triton instance create -t triton.cns.services=web base-64-trunk ${PACKAGE?}
 
 # Configure Backends
-triton instance list -H tag.triton.cns.services=web -o shortid | while read host; do triton ssh $host "pkgin -y in nginx && svcadm enable nginx && hostname > /opt/local/share/examples/nginx/html/hostname.txt && curl http://localhost/hostname.txt"& done;
-
-# Create Loadbalancer (basic)
-triton instance create -t triton.cns.services=frontend -m cloud.tritoncompute:portmap=tcp://80:web.svc.e50784dc-5b87-4f05-8487-f04c16b7d729.us-central-1.cns.mnx.io:80 -m cloud.tritoncompute:loadbalancer=true cloud-load-balancer g1.nano
-
-# Create Loadbalancer with health checks
-triton instance create -t triton.cns.services=frontend -m cloud.tritoncompute:portmap=http://80:web.svc.e50784dc-5b87-4f05-8487-f04c16b7d729.us-central-1.cns.mnx.io:80{check:/hostname.txt,rise:2,fall:1} -m cloud.tritoncompute:loadbalancer=true cloud-load-balancer g1.nano
+triton instance list -H tag.triton.cns.services=web -o shortid | while read host; do triton ssh $host "pkgin -y in nginx && svcadm enable nginx && hostname > /opt/local/share/examples/nginx/html/hostname.txt && curl http://localhost/hostname.txt" ; done;
 ```
+
+### HTTP Only (No TLS)
+
+```bash
+# Create Loadbalancer with plain HTTP
+triton instance create -w -t triton.cns.services=frontend-plain \
+  -m cloud.tritoncompute:portmap=http://80:web.svc.${UUID?}.${CNS_DOMAIN?}:80 \
+  -m cloud.tritoncompute:loadbalancer=true \
+  -n frontend-plain \
+  ${IMAGE?} ${PACKAGE?}
+
+# Test the load balancer
+curl http://frontend-plain.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
+```
+
+### HTTPS with Self-Signed Certificate
+
+```bash
+# Create Loadbalancer with HTTPS but no certificate_name (will use self-signed)
+triton instance create -w -t triton.cns.services=frontend-ssl \
+  -m cloud.tritoncompute:portmap=https-http://443:web.svc.${UUID?}.${CNS_DOMAIN?}:80 \
+  -m cloud.tritoncompute:loadbalancer=true \
+  -n frontend-ssl \
+  ${IMAGE?} ${PACKAGE?}
+
+# Test the load balancer (will use self-signed certificate)
+curl -k https://frontend-ssl.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
+```
+
+### HTTPS with LetsEncrypt Certificate
+
+This test exercise all three flavors of https proxy (http backend, unverified https, verified https):
+
+```bash
+# Create Loadbalancer with HTTPS and LetsEncrypt certificate
+# Note: You must have proper DNS CNAME records pointing to the load balancer's CNS record
+triton instance create -w -t triton.cns.services=frontend \
+  -m cloud.tritoncompute:portmap="https-http://443:web.svc.${UUID?}.${CNS_DOMAIN?}:80,https+insecure://8443:frontend-ssl.svc.${UUID?}.${CNS_DOMAIN?}:443,https://9443:us-central.manta.mnx.io:443" \
+  -m cloud.tritoncompute:certificate_name=${REAL_DOMAIN?} \
+  -m cloud.tritoncompute:loadbalancer=true \
+  -n frontend \
+  ${IMAGE?} ${PACKAGE?}
+
+# Test the load balancer (will use LetsEncrypt certificate)
+curl https://${REAL_DOMAIN?}/hostname.txt
+curl https://${REAL_DOMAIN?}:8443/hostname.txt
+curl https://${REAL_DOMAIN?}:9443/nshalman/public/hello-world.txt
+```
+
+### TCP Load Balancing with HTTP Health Checks
+
+```bash
+# Create TCP load balancer (Layer-4 proxy)
+triton instance create -w -t triton.cns.services=frontend-tcp \
+  -m cloud.tritoncompute:portmap="tcp://80:web.svc.${UUID?}.${CNS_DOMAIN?}:80{check:/hostname.txt,rise:2,fall:1}" \
+  -m cloud.tritoncompute:loadbalancer=true \
+  -n frontend-tcp \
+  ${IMAGE?} ${PACKAGE?}
+
+# Test the TCP load balancer
+curl http://frontend-tcp.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
+```
+
+### Important Notes for Testing
+
+1. **DNS Configuration**: For LetsEncrypt certificates, ensure you have proper DNS CNAME records pointing to your load balancer's CNS record before creating the instance.
+
+2. **Certificate Names**: Replace `example.com` with your actual domain name when testing LetsEncrypt certificates.
+
+3. **CNS Names**: The `${UUID?}` variable is automatically populated from your account information.
+
+4. **Self-Signed Certificates**: Use the `-k` flag with curl when testing self-signed certificates to skip certificate verification.

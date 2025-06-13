@@ -1235,7 +1235,7 @@ backend be0
 	mode http
 	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
 	dynamic-cookie-key {}
-	server-template rs 32 secure-app.svc.account_uuid.datacenter.cns.domain.zone:8443 ssl check resolvers system init-addr none
+	server-template rs 32 secure-app.svc.account_uuid.datacenter.cns.domain.zone:8443 ssl verify required ca-file /opt/local/share/mozilla-rootcerts/cacert.pem check resolvers system init-addr none
 "#,
             cookie_key
         );
