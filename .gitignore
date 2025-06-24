@@ -1,6 +1,7 @@
-bits
-node_modules
-proto
+/cache
+/dehydrated
+/proto
+/rust
+/target
 
-dehydrated
-dehydrated.tar.gz
+*.tar.gz

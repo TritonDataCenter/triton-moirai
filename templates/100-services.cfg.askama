@@ -1,0 +1,34 @@
+#                                                  #
+# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
+#                                                  #
+{% for service in services %}
+frontend fe{{loop.index0}}
+	mode {{service.service_type.mode()}}
+	bind *:{{service.listen_port}}{% if service.frontend_ssl() %} ssl crt {{FULL_CHAIN_PEM_PATH}}{% endif %}
+	default_backend be{{loop.index0}}
+
+backend be{{loop.index0}}
+	mode {{service.service_type.mode()}}
+{%- if service.use_sticky_session() %}{#+ #}
+	cookie CLOUD-TRITONCOMPUTE-RS insert indirect nocache dynamic
+	dynamic-cookie-key {{service.dynamic_cookie_key()}}
+{%- endif %}
+{%- if service.http_check() %}{#+ #}
+	option httpchk GET {{service.http_check_endpoint()}}
+	http-check expect status 200
+{%- endif %}
+	server-template rs {{max_backends}} {{service.backend_name}}{{service.backend_port_str()}}
+		{%- if service.backend_ssl() %}
+			{#- #} ssl
+			{%- if service.backend_ssl_verify() %}
+				{#- #} verify required ca-file /opt/local/share/mozilla-rootcerts/cacert.pem
+			{%- else %}
+				{#- #} verify none
+			{%- endif %}
+		{%- endif %}
+		{#- #} check
+		{%- if let Some(port) = service.check_port %} port {{port}}{% endif %}
+		{%- if let Some(rise) = service.check_rise %} rise {{rise}}{% endif %}
+		{%- if let Some(fall) = service.check_fall %} fall {{fall}}{% endif %}
+		{#- #} resolvers system init-addr none
+{% endfor %}
