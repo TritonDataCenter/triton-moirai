@@ -43,6 +43,9 @@ Moirai supports the following keys:
   (e.g., `198.51.100.0/24`) that are allowed to access the metrics endpoint.
 * `cloud.tritoncompute:metrics_port` - Port number for the metrics endpoint.
   Defaults to `8405` if not specified.
+* `cloud.tritoncompute:syslog` - Remote syslog server endpoint in `IP:PORT` format
+  (e.g., `10.11.28.101:30514`). When configured, HAProxy will forward logs to this
+  server in addition to local logging.
 
 Metadata keys can be added post-provision. The load balancer will reconfigure
 itself shortly after the metadata is updated.
@@ -176,6 +179,41 @@ outside of the configured ACL will receive a `403` response. If you want the
 load balancer to not respond at all then you must also configure Cloud Firewall
 for the instance.
 
+## Syslog Configuration
+
+The load balancer can forward HAProxy logs to a remote syslog server by setting
+the `cloud.tritoncompute:syslog` metadata key. This is useful for centralized
+logging and monitoring.
+
+### Syslog Metadata Format
+
+The `cloud.tritoncompute:syslog` value must be in `IP:PORT` format:
+- Example: `10.11.28.101:30514`
+
+### Syslog Behavior
+
+- When configured, HAProxy will send logs to both local syslog (`127.0.0.1`) and
+  the specified remote syslog server
+- The load balancer's hostname will be included in syslog messages
+  (`log-send-hostname` is enabled)
+- The metadata is validated to ensure it's a valid IP address and port
+- Port must be between 1 and 65534
+- Invalid values are ignored and logged
+
+### Dynamic Updates
+
+The syslog configuration can be updated dynamically without instance restart:
+```bash
+# Add or update syslog endpoint
+triton instance metadata update <instance> cloud.tritoncompute:syslog=10.11.28.101:30514
+
+# Remove syslog endpoint
+triton instance metadata delete <instance> cloud.tritoncompute:syslog
+```
+
+The load balancer will detect the metadata change and reconfigure HAProxy within
+approximately one minute.
+
 ## Notes
 
 * Once a named certificate is used, the load balancer instance can't go back to
@@ -305,6 +343,27 @@ triton instance create -w -t triton.cns.services=frontend-tcp \
 
 # Test the TCP load balancer
 curl http://frontend-tcp.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
+```
+
+### Syslog Forwarding
+
+```bash
+# Create load balancer with remote syslog forwarding
+triton instance create -w -t triton.cns.services=frontend-syslog \
+  -m cloud.tritoncompute:portmap="http://80:web.svc.${UUID?}.${CNS_DOMAIN?}:80" \
+  -m cloud.tritoncompute:loadbalancer=true \
+  -m cloud.tritoncompute:syslog=10.11.28.101:30514 \
+  -n frontend-syslog \
+  ${IMAGE?} ${PACKAGE?}
+
+# Test the load balancer
+curl http://frontend-syslog.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
+
+# Update syslog configuration dynamically
+triton instance metadata update frontend-syslog cloud.tritoncompute:syslog=192.168.1.10:514
+
+# Remove syslog forwarding
+triton instance metadata delete frontend-syslog cloud.tritoncompute:syslog
 ```
 
 ### Important Notes for Testing

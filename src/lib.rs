@@ -10,6 +10,7 @@ use log::{debug, error, info, warn};
 use std::error::Error as StdError;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
@@ -30,6 +31,7 @@ pub const METRICS_ACL_KEY: &str = "cloud.tritoncompute:metrics_acl";
 pub const METRICS_PORT_KEY: &str = "cloud.tritoncompute:metrics_port";
 pub const CERT_NAME_KEY: &str = "cloud.tritoncompute:certificate_name";
 pub const LOADBALANCER_KEY: &str = "cloud.tritoncompute:loadbalancer";
+pub const SYSLOG_KEY: &str = "cloud.tritoncompute:syslog";
 
 // File path constants
 pub const FULL_CHAIN_PEM_PATH: &str = "/opt/triton/tls/default/fullchain.pem";
@@ -39,7 +41,6 @@ pub const REAL_CONFIG_DIR: &str = "/opt/local/etc/haproxy.cfg";
 pub const HAPROXY_BINARY: &str = "/opt/local/sbin/haproxy";
 
 // Embedded HAProxy config files
-const HAPROXY_GLOBAL_CFG: &str = include_str!("../templates/000-global.cfg");
 const HAPROXY_DEFAULTS_CFG: &str = include_str!("../templates/001-defaults.cfg");
 const HAPROXY_RESOLVER_CFG: &str = include_str!("../templates/002-resolver.cfg");
 
@@ -400,6 +401,13 @@ pub struct MetricsConfig {
     pub metrics_port: u16,
 }
 
+/// Template for global configuration
+#[derive(Template)]
+#[template(path = "000-global.cfg.askama")]
+pub struct GlobalConfig {
+    pub syslog_endpoint: Option<SocketAddr>,
+}
+
 /// Struct to track services that couldn't be parsed or validated
 #[derive(Debug)]
 pub struct RejectedService {
@@ -508,6 +516,49 @@ pub fn parse_max_rs(input: &str) -> usize {
 /// Returns a boolean indicating if the loadbalancer flag is enabled
 pub fn is_loadbalancer_enabled(input: &str) -> bool {
     input.trim().eq_ignore_ascii_case("true")
+}
+
+/// Parse the syslog endpoint from metadata
+///
+/// Validates that the input looks like a reasonable IP address and port combination.
+/// Returns None if the input is invalid or empty.
+///
+/// # Arguments
+///
+/// * `input` - The syslog endpoint string (e.g., "10.11.28.101:30514")
+///
+/// # Returns
+///
+/// The validated SocketAddr, or None if invalid
+pub fn parse_syslog_endpoint(input: &str) -> Option<SocketAddr> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Use std::net::SocketAddr to parse and validate the address
+    match trimmed.parse::<SocketAddr>() {
+        Ok(socket_addr) => {
+            // Additional validation: ensure port is in valid range
+            let port = socket_addr.port();
+            if (MIN_PORT..=MAX_PORT).contains(&port) {
+                Some(socket_addr)
+            } else {
+                warn!(
+                    "Invalid syslog port {}: must be between {} and {}",
+                    port, MIN_PORT, MAX_PORT
+                );
+                None
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Invalid syslog endpoint format '{}': {}. Expected format: 'IP:PORT'",
+                trimmed, e
+            );
+            None
+        }
+    }
 }
 
 /// Get metadata for a given key using mdata-get command
@@ -697,9 +748,19 @@ pub fn configure_haproxy(real_dir: &Path) -> Result<bool> {
     // Create destination directory if it doesn't exist
     fs::create_dir_all(candidate_dir).context("Failed to create destination directory")?;
 
-    // Write embedded HAProxy config files directly
-    fs::write(candidate_dir.join("000-global.cfg"), HAPROXY_GLOBAL_CFG)
+    // Get syslog metadata and render global configuration
+    let syslog_data = mdata_get(SYSLOG_KEY)?;
+    let syslog_endpoint = parse_syslog_endpoint(&syslog_data);
+
+    // Create and render global configuration
+    let global_config = GlobalConfig { syslog_endpoint };
+    let rendered_global = global_config
+        .render()
+        .context("Failed to render global configuration template")?;
+    fs::write(candidate_dir.join("000-global.cfg"), rendered_global)
         .context("Failed to write global config file")?;
+
+    // Write other embedded HAProxy config files directly
     fs::write(candidate_dir.join("001-defaults.cfg"), HAPROXY_DEFAULTS_CFG)
         .context("Failed to write defaults config file")?;
     fs::write(candidate_dir.join("002-resolver.cfg"), HAPROXY_RESOLVER_CFG)
@@ -1074,6 +1135,57 @@ pub mod tests {
     }
 
     #[test]
+    fn test_parse_syslog_endpoint() {
+        // Test with empty string - should return None
+        assert_eq!(parse_syslog_endpoint(""), None);
+
+        // Test with whitespace only - should return None
+        assert_eq!(parse_syslog_endpoint("   "), None);
+
+        // Test with valid IPv4 addresses and ports
+        assert_eq!(
+            parse_syslog_endpoint("10.11.28.101:30514"),
+            Some("10.11.28.101:30514".parse().unwrap())
+        );
+        assert_eq!(
+            parse_syslog_endpoint("192.168.1.1:514"),
+            Some("192.168.1.1:514".parse().unwrap())
+        );
+        assert_eq!(
+            parse_syslog_endpoint("127.0.0.1:1234"),
+            Some("127.0.0.1:1234".parse().unwrap())
+        );
+
+        // Test with valid IPv6 addresses and ports
+        assert_eq!(
+            parse_syslog_endpoint("[2001:db8::1]:514"),
+            Some("[2001:db8::1]:514".parse().unwrap())
+        );
+        assert_eq!(
+            parse_syslog_endpoint("[::1]:30514"),
+            Some("[::1]:30514".parse().unwrap())
+        );
+
+        // Test with whitespace around valid input
+        assert_eq!(
+            parse_syslog_endpoint("  10.11.28.101:30514  "),
+            Some("10.11.28.101:30514".parse().unwrap())
+        );
+
+        // Test with invalid formats - should return None
+        assert_eq!(parse_syslog_endpoint("not-an-ip:514"), None);
+        assert_eq!(parse_syslog_endpoint("10.11.28.101"), None); // No port
+        assert_eq!(parse_syslog_endpoint("10.11.28.101:"), None); // Empty port
+        assert_eq!(parse_syslog_endpoint("10.11.28.101:abc"), None); // Non-numeric port
+        assert_eq!(parse_syslog_endpoint("10.11.28.101:0"), None); // Port 0
+        assert_eq!(parse_syslog_endpoint("10.11.28.101:70000"), None); // Port too high
+        assert_eq!(parse_syslog_endpoint("256.1.1.1:514"), None); // Invalid IP octet
+        assert_eq!(parse_syslog_endpoint("192.168.1.1.1:514"), None); // Too many octets
+        assert_eq!(parse_syslog_endpoint("10.11.28:514"), None); // Missing octet
+        assert_eq!(parse_syslog_endpoint("10.11.28.101.1:514"), None); // Too many octets
+    }
+
+    #[test]
     fn test_parse_services_with_invalid() {
         let test_data = "tcp://12345:service_name.svc.account_uuid.datacenter.cns.domain.zone:23456,invalid://443:something,tcp://99999:invalid_port";
 
@@ -1417,6 +1529,40 @@ frontend __cloud_tritoncompute__metrics
   no log
 "#;
         assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn test_global_config_rendering_with_syslog() {
+        // Test global config with syslog endpoint
+        let global_config = GlobalConfig {
+            syslog_endpoint: Some("10.11.28.101:30514".parse().unwrap()),
+        };
+        let rendered = global_config
+            .render()
+            .expect("Failed to render global config");
+
+        // Check that the rendered template includes syslog configuration
+        assert!(rendered.contains("log 127.0.0.1 len 4096 local0"));
+        assert!(rendered.contains("log 10.11.28.101:30514 len 4096 local0"));
+        assert!(rendered.contains("log-send-hostname"));
+    }
+
+    #[test]
+    fn test_global_config_rendering_without_syslog() {
+        // Test global config without syslog endpoint
+        let global_config = GlobalConfig {
+            syslog_endpoint: None,
+        };
+        let rendered = global_config
+            .render()
+            .expect("Failed to render global config");
+
+        // Check that the rendered template does not include additional syslog configuration
+        assert!(rendered.contains("log 127.0.0.1 len 4096 local0"));
+        assert!(!rendered.contains("log-send-hostname"));
+        // Should only have one log line
+        let log_count = rendered.matches("log ").count();
+        assert_eq!(log_count, 1);
     }
 
     #[test]
