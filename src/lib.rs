@@ -3,6 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 // Copyright 2025 MNX Cloud, Inc.
+// Copyright 2025 Edgecast Cloud LLC.
 
 use anyhow::{Context, Result};
 use askama::Template;
