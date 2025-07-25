@@ -44,9 +44,9 @@ Moirai supports the following keys:
   (e.g., `198.51.100.0/24`) that are allowed to access the metrics endpoint.
 * `cloud.tritoncompute:metrics_port` - Port number for the metrics endpoint.
   Defaults to `8405` if not specified.
-* `cloud.tritoncompute:syslog` - Remote syslog server endpoint in `IP:PORT` format
-  (e.g., `10.11.28.101:30514`). When configured, HAProxy will forward logs to this
-  server in addition to local logging.
+* `cloud.tritoncompute:syslog` - Remote syslog server endpoint in `HOST:PORT` format
+  (e.g., `syslog.example.com:514` or `10.11.28.101:30514`). When configured, HAProxy
+  will forward logs to this server in addition to local logging.
 
 Metadata keys can be added post-provision. The load balancer will reconfigure
 itself shortly after the metadata is updated.
@@ -188,8 +188,9 @@ logging and monitoring.
 
 ### Syslog Metadata Format
 
-The `cloud.tritoncompute:syslog` value must be in `IP:PORT` format:
-- Example: `10.11.28.101:30514`
+The `cloud.tritoncompute:syslog` value must be in `HOST:PORT` format:
+- Example with IP: `10.11.28.101:30514`
+- Example with hostname: `syslog.example.com:514`
 
 ### Syslog Behavior
 
@@ -197,9 +198,9 @@ The `cloud.tritoncompute:syslog` value must be in `IP:PORT` format:
   the specified remote syslog server
 - The load balancer's hostname will be included in syslog messages
   (`log-send-hostname` is enabled)
-- The metadata is validated to ensure it's a valid IP address and port
-- Port must be between 1 and 65534
-- Invalid values are ignored and logged
+- The metadata accepts both hostnames and IP addresses
+- Any non-empty value in `HOST:PORT` format is accepted
+- Empty values are ignored
 
 ### Dynamic Updates
 
@@ -362,6 +363,9 @@ curl http://frontend-syslog.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
 
 # Update syslog configuration dynamically
 triton instance metadata update frontend-syslog cloud.tritoncompute:syslog=192.168.1.10:514
+
+# Update syslog to use hostname
+triton instance metadata update frontend-syslog cloud.tritoncompute:syslog=syslog.example.com:514
 
 # Remove syslog forwarding
 triton instance metadata delete frontend-syslog cloud.tritoncompute:syslog

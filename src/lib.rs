@@ -11,7 +11,6 @@ use log::{debug, error, info, warn};
 use std::error::Error as StdError;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
@@ -406,7 +405,7 @@ pub struct MetricsConfig {
 #[derive(Template)]
 #[template(path = "000-global.cfg.askama")]
 pub struct GlobalConfig {
-    pub syslog_endpoint: Option<SocketAddr>,
+    pub syslog_endpoint: Option<String>,
 }
 
 /// Struct to track services that couldn't be parsed or validated
@@ -521,45 +520,23 @@ pub fn is_loadbalancer_enabled(input: &str) -> bool {
 
 /// Parse the syslog endpoint from metadata
 ///
-/// Validates that the input looks like a reasonable IP address and port combination.
-/// Returns None if the input is invalid or empty.
+/// Accepts hostname or IP address with port. Returns None if the input is empty.
 ///
 /// # Arguments
 ///
-/// * `input` - The syslog endpoint string (e.g., "10.11.28.101:30514")
+/// * `input` - The syslog endpoint string (e.g., "syslog.example.com:514" or "10.11.28.101:30514")
 ///
 /// # Returns
 ///
-/// The validated SocketAddr, or None if invalid
-pub fn parse_syslog_endpoint(input: &str) -> Option<SocketAddr> {
+/// The endpoint as a String, or None if empty
+pub fn parse_syslog_endpoint(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
     }
 
-    // Use std::net::SocketAddr to parse and validate the address
-    match trimmed.parse::<SocketAddr>() {
-        Ok(socket_addr) => {
-            // Additional validation: ensure port is in valid range
-            let port = socket_addr.port();
-            if (MIN_PORT..=MAX_PORT).contains(&port) {
-                Some(socket_addr)
-            } else {
-                warn!(
-                    "Invalid syslog port {}: must be between {} and {}",
-                    port, MIN_PORT, MAX_PORT
-                );
-                None
-            }
-        }
-        Err(e) => {
-            warn!(
-                "Invalid syslog endpoint format '{}': {}. Expected format: 'IP:PORT'",
-                trimmed, e
-            );
-            None
-        }
-    }
+    // Just return the trimmed input - we trust the user's input
+    Some(trimmed.to_string())
 }
 
 /// Get metadata for a given key using mdata-get command
@@ -1146,44 +1123,52 @@ pub mod tests {
         // Test with valid IPv4 addresses and ports
         assert_eq!(
             parse_syslog_endpoint("10.11.28.101:30514"),
-            Some("10.11.28.101:30514".parse().unwrap())
+            Some("10.11.28.101:30514".to_string())
         );
         assert_eq!(
             parse_syslog_endpoint("192.168.1.1:514"),
-            Some("192.168.1.1:514".parse().unwrap())
+            Some("192.168.1.1:514".to_string())
         );
         assert_eq!(
             parse_syslog_endpoint("127.0.0.1:1234"),
-            Some("127.0.0.1:1234".parse().unwrap())
+            Some("127.0.0.1:1234".to_string())
         );
 
         // Test with valid IPv6 addresses and ports
         assert_eq!(
             parse_syslog_endpoint("[2001:db8::1]:514"),
-            Some("[2001:db8::1]:514".parse().unwrap())
+            Some("[2001:db8::1]:514".to_string())
         );
         assert_eq!(
             parse_syslog_endpoint("[::1]:30514"),
-            Some("[::1]:30514".parse().unwrap())
+            Some("[::1]:30514".to_string())
         );
 
         // Test with whitespace around valid input
         assert_eq!(
             parse_syslog_endpoint("  10.11.28.101:30514  "),
-            Some("10.11.28.101:30514".parse().unwrap())
+            Some("10.11.28.101:30514".to_string())
         );
 
-        // Test with invalid formats - should return None
-        assert_eq!(parse_syslog_endpoint("not-an-ip:514"), None);
-        assert_eq!(parse_syslog_endpoint("10.11.28.101"), None); // No port
-        assert_eq!(parse_syslog_endpoint("10.11.28.101:"), None); // Empty port
-        assert_eq!(parse_syslog_endpoint("10.11.28.101:abc"), None); // Non-numeric port
-        assert_eq!(parse_syslog_endpoint("10.11.28.101:0"), None); // Port 0
-        assert_eq!(parse_syslog_endpoint("10.11.28.101:70000"), None); // Port too high
-        assert_eq!(parse_syslog_endpoint("256.1.1.1:514"), None); // Invalid IP octet
-        assert_eq!(parse_syslog_endpoint("192.168.1.1.1:514"), None); // Too many octets
-        assert_eq!(parse_syslog_endpoint("10.11.28:514"), None); // Missing octet
-        assert_eq!(parse_syslog_endpoint("10.11.28.101.1:514"), None); // Too many octets
+        // Test with hostnames - now accepted
+        assert_eq!(
+            parse_syslog_endpoint("syslog.example.com:514"),
+            Some("syslog.example.com:514".to_string())
+        );
+        assert_eq!(
+            parse_syslog_endpoint("logs.internal.company.net:30514"),
+            Some("logs.internal.company.net:30514".to_string())
+        );
+
+        // Test with any format - we trust the input
+        assert_eq!(
+            parse_syslog_endpoint("10.11.28.101"),
+            Some("10.11.28.101".to_string())
+        );
+        assert_eq!(
+            parse_syslog_endpoint("my-syslog-server:8514"),
+            Some("my-syslog-server:8514".to_string())
+        );
     }
 
     #[test]
@@ -1536,7 +1521,7 @@ frontend __cloud_tritoncompute__metrics
     fn test_global_config_rendering_with_syslog() {
         // Test global config with syslog endpoint
         let global_config = GlobalConfig {
-            syslog_endpoint: Some("10.11.28.101:30514".parse().unwrap()),
+            syslog_endpoint: Some("10.11.28.101:30514".to_string()),
         };
         let rendered = global_config
             .render()
@@ -1545,6 +1530,22 @@ frontend __cloud_tritoncompute__metrics
         // Check that the rendered template includes syslog configuration
         assert!(rendered.contains("log 127.0.0.1 len 4096 local0"));
         assert!(rendered.contains("log 10.11.28.101:30514 len 4096 local0"));
+        assert!(rendered.contains("log-send-hostname"));
+    }
+
+    #[test]
+    fn test_global_config_rendering_with_hostname_syslog() {
+        // Test global config with hostname syslog endpoint
+        let global_config = GlobalConfig {
+            syslog_endpoint: Some("syslog.example.com:514".to_string()),
+        };
+        let rendered = global_config
+            .render()
+            .expect("Failed to render global config");
+
+        // Check that the rendered template includes syslog configuration with hostname
+        assert!(rendered.contains("log 127.0.0.1 len 4096 local0"));
+        assert!(rendered.contains("log syslog.example.com:514 len 4096 local0"));
         assert!(rendered.contains("log-send-hostname"));
     }
 
