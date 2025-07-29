@@ -735,7 +735,7 @@ pub fn configure_haproxy(real_dir: &Path) -> Result<bool> {
     let rendered_global = global_config
         .render()
         .context("Failed to render global configuration template")?;
-    fs::write(candidate_dir.join("000-global.cfg"), rendered_global)
+    fs::write(candidate_dir.join("000-global.cfg"), &rendered_global)
         .context("Failed to write global config file")?;
 
     // Write other embedded HAProxy config files directly
@@ -834,7 +834,8 @@ pub fn configure_haproxy(real_dir: &Path) -> Result<bool> {
     } else {
         warn!("Candidate config is invalid, keeping current configuration.");
         warn!("HAProxy validation output: {}", validation_output);
-        println!("{}", rendered_config);
+        println!("Global config: {}", rendered_global);
+        println!("Service Config: {}", rendered_config);
         Ok(false)
     }
 }
