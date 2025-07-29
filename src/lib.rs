@@ -535,7 +535,7 @@ pub fn parse_syslog_endpoint(input: &str) -> Option<String> {
         return None;
     }
 
-    // Just return the trimmed input - we trust the user's input
+    // Just return the trimmed input - we will let haproxy check its validity.
     Some(trimmed.to_string())
 }
 
