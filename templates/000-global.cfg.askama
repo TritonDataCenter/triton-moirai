@@ -54,3 +54,4 @@ global
 
     # curl https://ssl-config.mozilla.org/ffdhe2048.txt > /path/to/dhparam
     #ssl-dh-param-file /opt/triton/tls/dhparam.pem
+
