@@ -71,13 +71,15 @@ pub enum ServiceType {
     #[strum(serialize = "https-http")]
     HttpsHttp,
     Tcp,
+    #[strum(serialize = "tcp-proxy-v2")]
+    TcpProxyV2,
 }
 
 impl ServiceType {
     // Helper method to determine if service needs SSL configuration
     pub fn mode(&self) -> &ServiceType {
-        if matches!(self, ServiceType::Tcp) {
-            self
+        if matches!(self, ServiceType::Tcp | ServiceType::TcpProxyV2) {
+            &ServiceType::Tcp
         } else {
             &ServiceType::Http
         }
@@ -85,7 +87,7 @@ impl ServiceType {
 }
 
 /// Represents a mapping for haproxy from `cloud.tritoncompute:portmap`
-/// * `service_type` - Must be one of `http`, `https`, `https+insecure`, `https-http`, or `tcp`.
+/// * `service_type` - Must be one of `http`, `https`, `https+insecure`, `https-http`, `tcp`, or `tcp-proxy-v2`.
 ///   * `http` - Configures a Layer-7 proxy using the HTTP protocol. The backend
 ///     server(s) must not use SSL/TLS. `X-Forwarded-For` header will be added to
 ///     requests.
@@ -109,6 +111,8 @@ impl ServiceType {
 ///     header will be added to requests.
 ///   * `tcp` - Configures a Layer-4 proxy. The backend can use any port. If SSL/TLS
 ///     is desired, the backend must configure its own certificate.
+///   * `tcp-proxy-v2` - Configures a Layer-4 proxy that sends PROXY protocol v2 headers
+///     to the backend. The backend must support PROXY protocol v2.
 /// * `listen_port` - This designates the front end listening port.
 /// * `backend name` - This is a DNS name that must be resolvable. This **SHOULD**
 ///   be a CNS name, but can be any fully qualified DNS domain name.
@@ -167,6 +171,11 @@ impl Service {
     // Helper method to determine if backend SSL should verify certificates
     pub fn backend_ssl_verify(&self) -> bool {
         matches!(self.service_type, ServiceType::Https)
+    }
+
+    // Helper method to determine if service sends PROXY protocol v2 headers to backend
+    pub fn sends_proxy_v2(&self) -> bool {
+        matches!(self.service_type, ServiceType::TcpProxyV2)
     }
 
     // Helper method to generate a dynamic_cookie_key
@@ -1743,6 +1752,10 @@ backend be0
             service_type: ServiceType::Tcp,
             ..Default::default()
         };
+        let tcp_proxy_v2_service = Service {
+            service_type: ServiceType::TcpProxyV2,
+            ..Default::default()
+        };
 
         // Test frontend_ssl()
         assert!(!http_service.frontend_ssl());
@@ -1750,6 +1763,7 @@ backend be0
         assert!(https_insecure_service.frontend_ssl());
         assert!(https_http_service.frontend_ssl());
         assert!(!tcp_service.frontend_ssl());
+        assert!(!tcp_proxy_v2_service.frontend_ssl());
 
         // Test backend_ssl()
         assert!(!http_service.backend_ssl());
@@ -1757,6 +1771,7 @@ backend be0
         assert!(https_insecure_service.backend_ssl());
         assert!(!https_http_service.backend_ssl());
         assert!(!tcp_service.backend_ssl());
+        assert!(!tcp_proxy_v2_service.backend_ssl());
 
         // Test backend_ssl_verify()
         assert!(!http_service.backend_ssl_verify());
@@ -1764,6 +1779,7 @@ backend be0
         assert!(!https_insecure_service.backend_ssl_verify());
         assert!(!https_http_service.backend_ssl_verify());
         assert!(!tcp_service.backend_ssl_verify());
+        assert!(!tcp_proxy_v2_service.backend_ssl_verify());
 
         // Test use_sticky_session()
         assert!(http_service.use_sticky_session());
@@ -1771,6 +1787,15 @@ backend be0
         assert!(https_insecure_service.use_sticky_session());
         assert!(https_http_service.use_sticky_session());
         assert!(!tcp_service.use_sticky_session());
+        assert!(!tcp_proxy_v2_service.use_sticky_session());
+
+        // Test sends_proxy_v2()
+        assert!(!http_service.sends_proxy_v2());
+        assert!(!https_service.sends_proxy_v2());
+        assert!(!https_insecure_service.sends_proxy_v2());
+        assert!(!https_http_service.sends_proxy_v2());
+        assert!(!tcp_service.sends_proxy_v2());
+        assert!(tcp_proxy_v2_service.sends_proxy_v2());
     }
 
     #[test]
@@ -1786,5 +1811,63 @@ backend be0
 
         // Test that it serializes correctly
         assert_eq!(service.service_type.to_string(), "https+insecure");
+    }
+
+    #[test]
+    fn test_portmap_rendering_with_tcp_proxy_v2() {
+        // Create a test service with TCP PROXY v2 protocol
+        let services = vec![Service {
+            service_type: ServiceType::TcpProxyV2,
+            listen_port: 3306,
+            backend_name: "db.backend.com".to_string(),
+            backend_port: Some(3306),
+            ..Default::default()
+        }];
+
+        // Create a Portmap with the service
+        let portmap = Portmap {
+            services,
+            max_backends: MAX_BACKENDS_LOW,
+        };
+
+        // Render the template
+        let rendered = portmap.render().expect("Failed to render template");
+
+        // Check that the rendered template includes send-proxy-v2
+        let expected = r#"#                                                  #
+# ## DO NOT EDIT. THIS FILE WILL BE OVERWRITTEN ## #
+#                                                  #
+
+frontend fe0
+	mode tcp
+	bind *:3306
+	default_backend be0
+
+backend be0
+	mode tcp
+	server-template rs 32 db.backend.com:3306 send-proxy-v2 check resolvers system init-addr none
+"#;
+        assert_eq!(rendered, expected)
+    }
+
+    #[test]
+    fn test_parse_tcp_proxy_v2_service() {
+        // Test parsing the new tcp-proxy-v2 service type
+        let service = Service::from_str("tcp-proxy-v2://3306:db.backend.com:3306");
+        assert!(service.is_ok());
+        let service = service.unwrap();
+        assert_eq!(service.service_type, ServiceType::TcpProxyV2);
+        assert_eq!(service.listen_port, 3306);
+        assert_eq!(service.backend_name, "db.backend.com");
+        assert_eq!(service.backend_port, Some(3306));
+
+        // Test that it serializes correctly
+        assert_eq!(service.service_type.to_string(), "tcp-proxy-v2");
+        
+        // Test that helper methods work correctly
+        assert!(service.sends_proxy_v2());
+        assert!(!service.use_sticky_session());
+        assert!(!service.frontend_ssl());
+        assert!(!service.backend_ssl());
     }
 }

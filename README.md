@@ -65,7 +65,7 @@ A service designation uses the following syntax:
 <type>://<listen port>:<backend name>[:<backend port>][{health check params}]
 ```
 
-* `type` - Must be one of `http`, `https`, `https+insecure`, `https-http`, or `tcp`:
+* `type` - Must be one of `http`, `https`, `https+insecure`, `https-http`, `tcp`, or `tcp-proxy-v2`:
   * `http` - Configures a Layer-7 proxy using the HTTP protocol. The backend
     server(s) must not use SSL/TLS. `X-Forwarded-For` header will be added to
     requests.
@@ -89,6 +89,9 @@ A service designation uses the following syntax:
     header will be added to requests.
   * `tcp` - Configures a Layer-4 proxy. The backend can use any port. If SSL/TLS
     is desired, the backend must configure its own certificate.
+  * `tcp-proxy-v2` - Configures a Layer-4 proxy that sends PROXY protocol v2 headers
+    to the backend. The backend must support PROXY protocol v2 to receive original
+    client connection information.
 * `listen port` - This designates the front end listening port.
 * `backend name` - This is a DNS name that must be resolvable. This **SHOULD**
   be a CNS name, but can be any fully qualified DNS domain name.
@@ -146,11 +149,17 @@ https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443
 # Basic TCP service (using SRV records)
 tcp://636:my-backend.svc.my-login.us-west-1.cns.example.com
 
+# TCP service with PROXY protocol v2
+tcp-proxy-v2://3306:db-backend.svc.my-login.us-west-1.cns.example.com:3306
+
 # HTTP service with health check
 http://80:my-backend.svc.my-login.us-west-1.cns.example.com:80{check:/healthz}
 
 # HTTPS service with comprehensive health check configuration
 https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443{check:/status,port:9000,rise:3,fall:1}
+
+# TCP PROXY v2 service with health check
+tcp-proxy-v2://6379:redis-backend.svc.my-login.us-west-1.cns.example.com:6379{check:/ping,rise:2,fall:1}
 ```
 
 ## Certificate setup
@@ -345,6 +354,21 @@ triton instance create -w -t triton.cns.services=frontend-tcp \
 
 # Test the TCP load balancer
 curl http://frontend-tcp.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
+```
+
+### TCP Load Balancing with PROXY Protocol v2
+
+```bash
+# Create TCP load balancer with PROXY protocol v2
+triton instance create -w -t triton.cns.services=frontend-tcp-proxy \
+  -m cloud.tritoncompute:portmap="tcp-proxy-v2://3306:mysql.svc.${UUID?}.${CNS_DOMAIN?}:3306{check:/,port:8080,rise:2,fall:1}" \
+  -m cloud.tritoncompute:loadbalancer=true \
+  -n frontend-tcp-proxy \
+  ${IMAGE?} ${PACKAGE?}
+
+# Test the TCP PROXY v2 load balancer
+# Note: The backend service must support PROXY protocol v2 to receive original client IP information
+mysql -h frontend-tcp-proxy.svc.${UUID?}.${CNS_DOMAIN?} -u testuser -p
 ```
 
 ### Syslog Forwarding
