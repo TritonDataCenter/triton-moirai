@@ -6,6 +6,7 @@
 
 #
 # Copyright 2025 MNX Cloud, Inc.
+# Copyright 2025 Edgecast Cloud LLC.
 #
 
 NAME = cloud-load-balancer
@@ -103,10 +104,6 @@ release: all
 install: release
 	rm -rf /root/opt/triton/$(DIR_NAME)/
 	rsync -av $(RELSTAGEDIR)/root/ /
-
-.PHONY: check
-check:: fmt clippy test
-	@echo "Checking code quality"
 
 .PHONY: publish
 publish: release

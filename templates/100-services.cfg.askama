@@ -26,6 +26,9 @@ backend be{{loop.index0}}
 				{#- #} verify none
 			{%- endif %}
 		{%- endif %}
+		{%- if service.sends_proxy_v2() %}
+			{#- #} send-proxy-v2
+		{%- endif %}
 		{#- #} check
 		{%- if let Some(port) = service.check_port %} port {{port}}{% endif %}
 		{%- if let Some(rise) = service.check_rise %} rise {{rise}}{% endif %}

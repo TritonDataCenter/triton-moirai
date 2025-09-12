@@ -65,7 +65,7 @@ A service designation uses the following syntax:
 <type>://<listen port>:<backend name>[:<backend port>][{health check params}]
 ```
 
-* `type` - Must be one of `http`, `https`, `https+insecure`, `https-http`, or `tcp`:
+* `type` - Must be one of `http`, `https`, `https+insecure`, `https-http`, `tcp`, or `tcp-proxy-v2`:
   * `http` - Configures a Layer-7 proxy using the HTTP protocol. The backend
     server(s) must not use SSL/TLS. `X-Forwarded-For` header will be added to
     requests.
@@ -89,6 +89,9 @@ A service designation uses the following syntax:
     header will be added to requests.
   * `tcp` - Configures a Layer-4 proxy. The backend can use any port. If SSL/TLS
     is desired, the backend must configure its own certificate.
+  * `tcp-proxy-v2` - Configures a Layer-4 proxy that sends PROXY protocol v2 headers
+    to the backend. The backend must support PROXY protocol v2 to receive original
+    client connection information.
 * `listen port` - This designates the front end listening port.
 * `backend name` - This is a DNS name that must be resolvable. This **SHOULD**
   be a CNS name, but can be any fully qualified DNS domain name.
@@ -146,11 +149,17 @@ https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443
 # Basic TCP service (using SRV records)
 tcp://636:my-backend.svc.my-login.us-west-1.cns.example.com
 
+# TCP service with PROXY protocol v2
+tcp-proxy-v2://8080:nginx-backend.svc.my-login.us-west-1.cns.example.com:80
+
 # HTTP service with health check
 http://80:my-backend.svc.my-login.us-west-1.cns.example.com:80{check:/healthz}
 
 # HTTPS service with comprehensive health check configuration
 https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443{check:/status,port:9000,rise:3,fall:1}
+
+# TCP PROXY v2 service with health check
+tcp-proxy-v2://8080:nginx-backend.svc.my-login.us-west-1.cns.example.com:80{check:/healthz,rise:2,fall:1}
 ```
 
 ## Certificate setup
@@ -175,7 +184,7 @@ The metrics endpoint listens on port `8405` by default. This can be customized
 by setting the `cloud.tritoncompute:metrics_port` metadata key to a different
 port number (must be between 1-65534).
 
-**Note:** The load balancer will respond to *all hosts* on the metrics port. Hosts
+**NOTE:** The load balancer will respond to *all hosts* on the metrics port. Hosts
 outside of the configured ACL will receive a `403` response. If you want the
 load balancer to not respond at all then you must also configure Cloud Firewall
 for the instance.
@@ -319,7 +328,7 @@ This test exercise all three flavors of https proxy (http backend, unverified ht
 
 ```bash
 # Create Loadbalancer with HTTPS and LetsEncrypt certificate
-# Note: You must have proper DNS CNAME records pointing to the load balancer's CNS record
+# NOTE: You must have proper DNS CNAME records pointing to the load balancer's CNS record
 triton instance create -w -t triton.cns.services=frontend \
   -m cloud.tritoncompute:portmap="https-http://443:web.svc.${UUID?}.${CNS_DOMAIN?}:80,https+insecure://8443:frontend-ssl.svc.${UUID?}.${CNS_DOMAIN?}:443,https://9443:us-central.manta.mnx.io:443" \
   -m cloud.tritoncompute:certificate_name=${REAL_DOMAIN?} \
@@ -345,6 +354,23 @@ triton instance create -w -t triton.cns.services=frontend-tcp \
 
 # Test the TCP load balancer
 curl http://frontend-tcp.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
+```
+
+### TCP Load Balancing with PROXY Protocol v2
+
+```bash
+# Create TCP load balancer with PROXY protocol v2
+# NOTE: Backend must support PROXY protocol v2 (e.g., nginx with proxy_protocol directive)
+triton instance create -w -t triton.cns.services=frontend-tcp-proxy \
+  -m cloud.tritoncompute:portmap="tcp-proxy-v2://8080:web.svc.${UUID?}.${CNS_DOMAIN?}:80{check:/hostname.txt,rise:2,fall:1}" \
+  -m cloud.tritoncompute:loadbalancer=true \
+  -n frontend-tcp-proxy \
+  ${IMAGE?} ${PACKAGE?}
+
+# Test the TCP PROXY v2 load balancer
+# NOTE: The backend service must support PROXY protocol v2 to receive original client IP information
+# For nginx, configure with: listen 80 proxy_protocol; and real_ip_header proxy_protocol;
+curl http://frontend-tcp-proxy.svc.${UUID?}.${CNS_DOMAIN?}:8080/hostname.txt
 ```
 
 ### Syslog Forwarding
