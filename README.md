@@ -150,7 +150,7 @@ https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443
 tcp://636:my-backend.svc.my-login.us-west-1.cns.example.com
 
 # TCP service with PROXY protocol v2
-tcp-proxy-v2://3306:db-backend.svc.my-login.us-west-1.cns.example.com:3306
+tcp-proxy-v2://8080:nginx-backend.svc.my-login.us-west-1.cns.example.com:80
 
 # HTTP service with health check
 http://80:my-backend.svc.my-login.us-west-1.cns.example.com:80{check:/healthz}
@@ -159,7 +159,7 @@ http://80:my-backend.svc.my-login.us-west-1.cns.example.com:80{check:/healthz}
 https://443:my-backend.svc.my-login.us-west-1.cns.example.com:8443{check:/status,port:9000,rise:3,fall:1}
 
 # TCP PROXY v2 service with health check
-tcp-proxy-v2://6379:redis-backend.svc.my-login.us-west-1.cns.example.com:6379{check:/ping,rise:2,fall:1}
+tcp-proxy-v2://8080:nginx-backend.svc.my-login.us-west-1.cns.example.com:80{check:/healthz,rise:2,fall:1}
 ```
 
 ## Certificate setup
@@ -360,15 +360,17 @@ curl http://frontend-tcp.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
 
 ```bash
 # Create TCP load balancer with PROXY protocol v2
+# Note: Backend must support PROXY protocol v2 (e.g., nginx with proxy_protocol directive)
 triton instance create -w -t triton.cns.services=frontend-tcp-proxy \
-  -m cloud.tritoncompute:portmap="tcp-proxy-v2://3306:mysql.svc.${UUID?}.${CNS_DOMAIN?}:3306{check:/,port:8080,rise:2,fall:1}" \
+  -m cloud.tritoncompute:portmap="tcp-proxy-v2://8080:web.svc.${UUID?}.${CNS_DOMAIN?}:80{check:/hostname.txt,rise:2,fall:1}" \
   -m cloud.tritoncompute:loadbalancer=true \
   -n frontend-tcp-proxy \
   ${IMAGE?} ${PACKAGE?}
 
 # Test the TCP PROXY v2 load balancer
 # Note: The backend service must support PROXY protocol v2 to receive original client IP information
-mysql -h frontend-tcp-proxy.svc.${UUID?}.${CNS_DOMAIN?} -u testuser -p
+# For nginx, configure with: listen 80 proxy_protocol; and real_ip_header proxy_protocol;
+curl http://frontend-tcp-proxy.svc.${UUID?}.${CNS_DOMAIN?}:8080/hostname.txt
 ```
 
 ### Syslog Forwarding
