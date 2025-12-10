@@ -47,6 +47,8 @@ Moirai supports the following keys:
 * `cloud.tritoncompute:syslog` - Remote syslog server endpoint in `HOST:PORT` format
   (e.g., `syslog.example.com:514` or `10.11.28.101:30514`). When configured, HAProxy
   will forward logs to this server in addition to local logging.
+* `cloud.tritoncompute:timeouts` - Custom HAProxy timeout values in milliseconds.
+  Uses JSON-like syntax (e.g., `{server:180000}`). See Timeout Configuration section below.
 
 Metadata keys can be added post-provision. The load balancer will reconfigure
 itself shortly after the metadata is updated.
@@ -220,6 +222,74 @@ triton instance metadata update <instance> cloud.tritoncompute:syslog=10.11.28.1
 
 # Remove syslog endpoint
 triton instance metadata delete <instance> cloud.tritoncompute:syslog
+```
+
+The load balancer will detect the metadata change and reconfigure HAProxy within
+approximately one minute.
+
+## Timeout Configuration
+
+The load balancer uses default HAProxy timeout values that work well for most use cases.
+However, you can override these timeouts by setting the `cloud.tritoncompute:timeouts`
+metadata key.
+
+### Timeout Metadata Format
+
+The `cloud.tritoncompute:timeouts` value uses a JSON-like syntax with key:value pairs
+enclosed in curly braces:
+
+```
+{queue:0,connect:5000,client:60000,server:180000}
+```
+
+All parameters are optional. Any timeout not specified will use its default value.
+
+### Supported Timeout Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `queue`   | 0       | Time (ms) to wait in queue for a connection slot. 0 = unlimited |
+| `connect` | 2000    | Time (ms) to wait for a connection to be established to a backend |
+| `client`  | 55000   | Client inactivity timeout (ms) |
+| `server`  | 120000  | Server response timeout (ms) |
+
+### Timeout Examples
+
+```bash
+# Override only the server timeout (useful for long-running requests)
+triton instance metadata update <instance> \
+  cloud.tritoncompute:timeouts='{server:300000}'
+
+# Override multiple timeouts
+triton instance metadata update <instance> \
+  cloud.tritoncompute:timeouts='{connect:5000,client:60000,server:180000}'
+
+# Override all timeouts
+triton instance metadata update <instance> \
+  cloud.tritoncompute:timeouts='{queue:100,connect:5000,client:60000,server:180000}'
+```
+
+### Setting Timeouts at Provision Time
+
+```bash
+triton instance create -w -t triton.cns.services=frontend \
+  -m cloud.tritoncompute:portmap="http://80:web.svc.${UUID?}.${CNS_DOMAIN?}:80" \
+  -m cloud.tritoncompute:loadbalancer=true \
+  -m cloud.tritoncompute:timeouts='{server:180000}' \
+  -n frontend \
+  ${IMAGE?} ${PACKAGE?}
+```
+
+### Dynamic Updates
+
+Timeout configuration can be updated dynamically without instance restart:
+
+```bash
+# Update timeouts
+triton instance metadata update <instance> cloud.tritoncompute:timeouts='{server:300000}'
+
+# Remove custom timeouts (reverts to defaults)
+triton instance metadata delete <instance> cloud.tritoncompute:timeouts
 ```
 
 The load balancer will detect the metadata change and reconfigure HAProxy within

@@ -32,6 +32,7 @@ pub const METRICS_PORT_KEY: &str = "cloud.tritoncompute:metrics_port";
 pub const CERT_NAME_KEY: &str = "cloud.tritoncompute:certificate_name";
 pub const LOADBALANCER_KEY: &str = "cloud.tritoncompute:loadbalancer";
 pub const SYSLOG_KEY: &str = "cloud.tritoncompute:syslog";
+pub const TIMEOUTS_KEY: &str = "cloud.tritoncompute:timeouts";
 
 // File path constants
 pub const FULL_CHAIN_PEM_PATH: &str = "/opt/triton/tls/default/fullchain.pem";
@@ -41,7 +42,6 @@ pub const REAL_CONFIG_DIR: &str = "/opt/local/etc/haproxy.cfg";
 pub const HAPROXY_BINARY: &str = "/opt/local/sbin/haproxy";
 
 // Embedded HAProxy config files
-const HAPROXY_DEFAULTS_CFG: &str = include_str!("../templates/001-defaults.cfg");
 const HAPROXY_RESOLVER_CFG: &str = include_str!("../templates/002-resolver.cfg");
 
 // Path to mdata-get command for illumos
@@ -420,6 +420,41 @@ pub struct GlobalConfig {
     pub syslog_endpoint: Option<String>,
 }
 
+// Default timeout values (in milliseconds)
+pub const DEFAULT_TIMEOUT_QUEUE: u32 = 0;
+pub const DEFAULT_TIMEOUT_CONNECT: u32 = 2000;
+pub const DEFAULT_TIMEOUT_CLIENT: u32 = 55000;
+pub const DEFAULT_TIMEOUT_SERVER: u32 = 120000;
+
+/// Configuration for HAProxy timeouts
+///
+/// All timeout values are in milliseconds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeoutConfig {
+    pub queue: u32,
+    pub connect: u32,
+    pub client: u32,
+    pub server: u32,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            queue: DEFAULT_TIMEOUT_QUEUE,
+            connect: DEFAULT_TIMEOUT_CONNECT,
+            client: DEFAULT_TIMEOUT_CLIENT,
+            server: DEFAULT_TIMEOUT_SERVER,
+        }
+    }
+}
+
+/// Template for defaults configuration (includes timeouts)
+#[derive(Template)]
+#[template(path = "001-defaults.cfg.askama")]
+pub struct DefaultsConfig {
+    pub timeouts: TimeoutConfig,
+}
+
 /// Struct to track services that couldn't be parsed or validated
 #[derive(Debug)]
 pub struct RejectedService {
@@ -528,6 +563,96 @@ pub fn parse_max_rs(input: &str) -> usize {
 /// Returns a boolean indicating if the loadbalancer flag is enabled
 pub fn is_loadbalancer_enabled(input: &str) -> bool {
     input.trim().eq_ignore_ascii_case("true")
+}
+
+/// Parse timeout overrides from metadata
+///
+/// Parses a JSON-like string containing timeout overrides. Any timeout not specified
+/// will use the default value.
+///
+/// # Format
+///
+/// ```text
+/// {queue:0,connect:5000,client:60000,server:180000}
+/// ```
+///
+/// All parameters are optional. Values are in milliseconds.
+///
+/// # Supported Parameters
+///
+/// * `queue` - Time to wait in queue for a connection slot (0 = unlimited)
+/// * `connect` - Time to wait for a connection to be established to a backend
+/// * `client` - Client inactivity timeout
+/// * `server` - Server response timeout
+///
+/// # Arguments
+///
+/// * `input` - The timeout configuration string
+///
+/// # Returns
+///
+/// A TimeoutConfig with values from the input merged with defaults
+pub fn parse_timeouts(input: &str) -> TimeoutConfig {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return TimeoutConfig::default();
+    }
+
+    // Remove the curly braces if present
+    let content = trimmed.trim_start_matches('{').trim_end_matches('}');
+    if content.is_empty() {
+        return TimeoutConfig::default();
+    }
+
+    let mut config = TimeoutConfig::default();
+
+    // Split by comma and parse each key:value pair
+    for pair in content.split(',') {
+        let parts: Vec<&str> = pair.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            warn!("Invalid timeout parameter format: {}", pair);
+            continue;
+        }
+
+        let key = parts[0].trim();
+        let value = parts[1].trim();
+
+        match key {
+            "queue" => {
+                if let Ok(v) = value.parse::<u32>() {
+                    config.queue = v;
+                } else {
+                    warn!("Invalid queue timeout value: {}", value);
+                }
+            }
+            "connect" => {
+                if let Ok(v) = value.parse::<u32>() {
+                    config.connect = v;
+                } else {
+                    warn!("Invalid connect timeout value: {}", value);
+                }
+            }
+            "client" => {
+                if let Ok(v) = value.parse::<u32>() {
+                    config.client = v;
+                } else {
+                    warn!("Invalid client timeout value: {}", value);
+                }
+            }
+            "server" => {
+                if let Ok(v) = value.parse::<u32>() {
+                    config.server = v;
+                } else {
+                    warn!("Invalid server timeout value: {}", value);
+                }
+            }
+            _ => {
+                warn!("Unknown timeout parameter: {}", key);
+            }
+        }
+    }
+
+    config
 }
 
 /// Parse the syslog endpoint from metadata
@@ -750,9 +875,17 @@ pub fn configure_haproxy(real_dir: &Path) -> Result<bool> {
     fs::write(candidate_dir.join("000-global.cfg"), &rendered_global)
         .context("Failed to write global config file")?;
 
-    // Write other embedded HAProxy config files directly
-    fs::write(candidate_dir.join("001-defaults.cfg"), HAPROXY_DEFAULTS_CFG)
+    // Get timeout metadata and render defaults configuration
+    let timeouts_data = mdata_get(TIMEOUTS_KEY)?;
+    let timeouts = parse_timeouts(&timeouts_data);
+    let defaults_config = DefaultsConfig { timeouts };
+    let rendered_defaults = defaults_config
+        .render()
+        .context("Failed to render defaults configuration template")?;
+    fs::write(candidate_dir.join("001-defaults.cfg"), &rendered_defaults)
         .context("Failed to write defaults config file")?;
+
+    // Write resolver config file (static)
     fs::write(candidate_dir.join("002-resolver.cfg"), HAPROXY_RESOLVER_CFG)
         .context("Failed to write resolver config file")?;
 
@@ -1872,5 +2005,133 @@ backend be0
         assert!(!service.use_sticky_session());
         assert!(!service.frontend_ssl());
         assert!(!service.backend_ssl());
+    }
+
+    #[test]
+    fn test_parse_timeouts_empty() {
+        // Empty string should return defaults
+        let config = parse_timeouts("");
+        assert_eq!(config, TimeoutConfig::default());
+
+        // Whitespace only should return defaults
+        let config = parse_timeouts("   ");
+        assert_eq!(config, TimeoutConfig::default());
+
+        // Empty braces should return defaults
+        let config = parse_timeouts("{}");
+        assert_eq!(config, TimeoutConfig::default());
+    }
+
+    #[test]
+    fn test_parse_timeouts_full() {
+        // Test with all timeout values specified
+        let config = parse_timeouts("{queue:100,connect:5000,client:60000,server:180000}");
+        assert_eq!(config.queue, 100);
+        assert_eq!(config.connect, 5000);
+        assert_eq!(config.client, 60000);
+        assert_eq!(config.server, 180000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_partial() {
+        // Test with only some values specified - others should use defaults
+        let config = parse_timeouts("{connect:5000,server:180000}");
+        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE);
+        assert_eq!(config.connect, 5000);
+        assert_eq!(config.client, DEFAULT_TIMEOUT_CLIENT);
+        assert_eq!(config.server, 180000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_single() {
+        // Test with single timeout override
+        let config = parse_timeouts("{server:300000}");
+        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE);
+        assert_eq!(config.connect, DEFAULT_TIMEOUT_CONNECT);
+        assert_eq!(config.client, DEFAULT_TIMEOUT_CLIENT);
+        assert_eq!(config.server, 300000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_with_whitespace() {
+        // Test with whitespace around values
+        let config = parse_timeouts("{ queue : 50 , connect : 3000 }");
+        assert_eq!(config.queue, 50);
+        assert_eq!(config.connect, 3000);
+        assert_eq!(config.client, DEFAULT_TIMEOUT_CLIENT);
+        assert_eq!(config.server, DEFAULT_TIMEOUT_SERVER);
+    }
+
+    #[test]
+    fn test_parse_timeouts_without_braces() {
+        // Test without braces (should still work)
+        let config = parse_timeouts("queue:100,connect:5000");
+        assert_eq!(config.queue, 100);
+        assert_eq!(config.connect, 5000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_invalid_values() {
+        // Invalid values should be ignored and default used
+        let config = parse_timeouts("{queue:abc,connect:5000}");
+        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE); // default because invalid
+        assert_eq!(config.connect, 5000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_unknown_keys() {
+        // Unknown keys should be ignored
+        let config = parse_timeouts("{unknown:123,connect:5000}");
+        assert_eq!(config.connect, 5000);
+        // Default values for others
+        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE);
+    }
+
+    #[test]
+    fn test_timeout_config_default() {
+        let config = TimeoutConfig::default();
+        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE);
+        assert_eq!(config.connect, DEFAULT_TIMEOUT_CONNECT);
+        assert_eq!(config.client, DEFAULT_TIMEOUT_CLIENT);
+        assert_eq!(config.server, DEFAULT_TIMEOUT_SERVER);
+    }
+
+    #[test]
+    fn test_defaults_config_rendering() {
+        // Test with default timeouts
+        let defaults_config = DefaultsConfig {
+            timeouts: TimeoutConfig::default(),
+        };
+        let rendered = defaults_config
+            .render()
+            .expect("Failed to render defaults config");
+
+        // Check that the rendered template includes default timeout values
+        assert!(rendered.contains("timeout queue   0"));
+        assert!(rendered.contains("timeout connect 2000"));
+        assert!(rendered.contains("timeout client  55000"));
+        assert!(rendered.contains("timeout server  120000"));
+    }
+
+    #[test]
+    fn test_defaults_config_rendering_custom_timeouts() {
+        // Test with custom timeouts
+        let defaults_config = DefaultsConfig {
+            timeouts: TimeoutConfig {
+                queue: 100,
+                connect: 5000,
+                client: 60000,
+                server: 180000,
+            },
+        };
+        let rendered = defaults_config
+            .render()
+            .expect("Failed to render defaults config");
+
+        // Check that the rendered template includes custom timeout values
+        assert!(rendered.contains("timeout queue   100"));
+        assert!(rendered.contains("timeout connect 5000"));
+        assert!(rendered.contains("timeout client  60000"));
+        assert!(rendered.contains("timeout server  180000"));
     }
 }
