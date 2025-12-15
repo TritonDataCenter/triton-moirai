@@ -218,7 +218,7 @@ The `cloud.tritoncompute:syslog` value must be in `HOST:PORT` format:
 The syslog configuration can be updated dynamically without instance restart:
 ```bash
 # Add or update syslog endpoint
-triton instance metadata update <instance> cloud.tritoncompute:syslog=10.11.28.101:30514
+triton instance metadata set <instance> cloud.tritoncompute:syslog=10.11.28.101:30514
 
 # Remove syslog endpoint
 triton instance metadata delete <instance> cloud.tritoncompute:syslog
@@ -257,15 +257,15 @@ All parameters are optional. Any timeout not specified will use its default valu
 
 ```bash
 # Override only the server timeout (useful for long-running requests)
-triton instance metadata update <instance> \
+triton instance metadata set <instance> \
   cloud.tritoncompute:timeouts='{server:300000}'
 
 # Override multiple timeouts
-triton instance metadata update <instance> \
+triton instance metadata set <instance> \
   cloud.tritoncompute:timeouts='{connect:5000,client:60000,server:180000}'
 
 # Override all timeouts
-triton instance metadata update <instance> \
+triton instance metadata set <instance> \
   cloud.tritoncompute:timeouts='{queue:100,connect:5000,client:60000,server:180000}'
 ```
 
@@ -286,7 +286,7 @@ Timeout configuration can be updated dynamically without instance restart:
 
 ```bash
 # Update timeouts
-triton instance metadata update <instance> cloud.tritoncompute:timeouts='{server:300000}'
+triton instance metadata set <instance> cloud.tritoncompute:timeouts='{server:300000}'
 
 # Remove custom timeouts (reverts to defaults)
 triton instance metadata delete <instance> cloud.tritoncompute:timeouts
@@ -458,10 +458,10 @@ triton instance create -w -t triton.cns.services=frontend-syslog \
 curl http://frontend-syslog.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
 
 # Update syslog configuration dynamically
-triton instance metadata update frontend-syslog cloud.tritoncompute:syslog=192.168.1.10:514
+triton instance metadata set frontend-syslog cloud.tritoncompute:syslog=192.168.1.10:514
 
 # Update syslog to use hostname
-triton instance metadata update frontend-syslog cloud.tritoncompute:syslog=syslog.example.com:514
+triton instance metadata set frontend-syslog cloud.tritoncompute:syslog=syslog.example.com:514
 
 # Remove syslog forwarding
 triton instance metadata delete frontend-syslog cloud.tritoncompute:syslog
