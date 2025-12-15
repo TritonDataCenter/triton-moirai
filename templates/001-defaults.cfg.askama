@@ -30,3 +30,4 @@ defaults
     timeout connect {{ timeouts.connect }}
     timeout client  {{ timeouts.client }}
     timeout server  {{ timeouts.server }}
+
