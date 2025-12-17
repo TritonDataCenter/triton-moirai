@@ -265,6 +265,13 @@ Timeout values can be specified in three formats:
 
 **Note:** Client and server timeouts are clamped to a maximum of 60 minutes (3600000ms).
 
+**TCP Mode Note:** When using TCP services (`tcp://` or `tcp-proxy-v2://`), consider setting
+`client` and `server` timeouts to equal values. In TCP mode, HAProxy proxies raw bytes
+bidirectionally without distinguishing request/response phases. When either timeout expires,
+the entire connection closes—having different values can make it confusing which timeout
+triggered the disconnection. See the [HAProxy Blog](https://www.haproxy.com/blog/the-four-essential-sections-of-an-haproxy-configuration#timeout-connect-timeout-client-timeout-server)
+for more details.
+
 ### Timeout Examples
 
 ```bash
