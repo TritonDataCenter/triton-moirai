@@ -27,8 +27,8 @@ defaults
     no option httpclose
     no option http-server-close
     retries   1
-    timeout queue   {{ timeouts.queue }}
-    timeout connect {{ timeouts.connect }}
-    timeout client  {{ timeouts.client }}
-    timeout server  {{ timeouts.server }}
+    timeout queue   {{ timeouts.queue_ms() }}
+    timeout connect {{ timeouts.connect_ms() }}
+    timeout client  {{ timeouts.client_ms() }}
+    timeout server  {{ timeouts.server_ms() }}
 

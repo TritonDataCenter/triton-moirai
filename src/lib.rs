@@ -14,6 +14,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
+use std::time::Duration;
 
 pub mod certificates;
 
@@ -421,29 +422,54 @@ pub struct GlobalConfig {
 }
 
 // Default timeout values (in milliseconds)
-pub const DEFAULT_TIMEOUT_QUEUE: u32 = 0;
-pub const DEFAULT_TIMEOUT_CONNECT: u32 = 2000;
-pub const DEFAULT_TIMEOUT_CLIENT: u32 = 55000;
-pub const DEFAULT_TIMEOUT_SERVER: u32 = 120000;
+pub const DEFAULT_TIMEOUT_QUEUE_MS: u64 = 0;
+pub const DEFAULT_TIMEOUT_CONNECT_MS: u64 = 2000;
+pub const DEFAULT_TIMEOUT_CLIENT_MS: u64 = 55000;
+pub const DEFAULT_TIMEOUT_SERVER_MS: u64 = 120000;
+
+// Maximum allowed timeout for client/server (60 minutes in milliseconds)
+pub const MAX_TIMEOUT_CLIENT_SERVER_MS: u64 = 60 * 60 * 1000;
 
 /// Configuration for HAProxy timeouts
 ///
-/// All timeout values are in milliseconds.
+/// All timeout values are stored as Duration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeoutConfig {
-    pub queue: u32,
-    pub connect: u32,
-    pub client: u32,
-    pub server: u32,
+    pub queue: Duration,
+    pub connect: Duration,
+    pub client: Duration,
+    pub server: Duration,
+}
+
+impl TimeoutConfig {
+    /// Returns the queue timeout in milliseconds for HAProxy configuration
+    pub fn queue_ms(&self) -> u64 {
+        self.queue.as_millis() as u64
+    }
+
+    /// Returns the connect timeout in milliseconds for HAProxy configuration
+    pub fn connect_ms(&self) -> u64 {
+        self.connect.as_millis() as u64
+    }
+
+    /// Returns the client timeout in milliseconds for HAProxy configuration
+    pub fn client_ms(&self) -> u64 {
+        self.client.as_millis() as u64
+    }
+
+    /// Returns the server timeout in milliseconds for HAProxy configuration
+    pub fn server_ms(&self) -> u64 {
+        self.server.as_millis() as u64
+    }
 }
 
 impl Default for TimeoutConfig {
     fn default() -> Self {
         Self {
-            queue: DEFAULT_TIMEOUT_QUEUE,
-            connect: DEFAULT_TIMEOUT_CONNECT,
-            client: DEFAULT_TIMEOUT_CLIENT,
-            server: DEFAULT_TIMEOUT_SERVER,
+            queue: Duration::from_millis(DEFAULT_TIMEOUT_QUEUE_MS),
+            connect: Duration::from_millis(DEFAULT_TIMEOUT_CONNECT_MS),
+            client: Duration::from_millis(DEFAULT_TIMEOUT_CLIENT_MS),
+            server: Duration::from_millis(DEFAULT_TIMEOUT_SERVER_MS),
         }
     }
 }
@@ -565,6 +591,35 @@ pub fn is_loadbalancer_enabled(input: &str) -> bool {
     input.trim().eq_ignore_ascii_case("true")
 }
 
+/// Parse a single timeout value string into a Duration
+///
+/// Supports the following formats:
+/// - Plain number: interpreted as milliseconds (e.g., "5000" = 5000ms)
+/// - Number with 'ms' suffix: milliseconds (e.g., "5000ms" = 5000ms)
+/// - Number with 's' suffix: seconds (e.g., "5s" = 5000ms)
+///
+/// # Arguments
+///
+/// * `value` - The timeout value string to parse
+///
+/// # Returns
+///
+/// Some(Duration) if parsing succeeds, None if the format is invalid
+fn parse_timeout_value(value: &str) -> Option<Duration> {
+    let trimmed = value.trim();
+
+    if let Some(stripped) = trimmed.strip_suffix("ms") {
+        // Milliseconds with explicit suffix
+        stripped.trim().parse::<u64>().ok().map(Duration::from_millis)
+    } else if let Some(stripped) = trimmed.strip_suffix('s') {
+        // Seconds with explicit suffix
+        stripped.trim().parse::<u64>().ok().map(Duration::from_secs)
+    } else {
+        // Plain number = milliseconds (no suffix)
+        trimmed.parse::<u64>().ok().map(Duration::from_millis)
+    }
+}
+
 /// Parse timeout overrides from metadata
 ///
 /// Parses a JSON-like string containing timeout overrides. Any timeout not specified
@@ -573,17 +628,22 @@ pub fn is_loadbalancer_enabled(input: &str) -> bool {
 /// # Format
 ///
 /// ```text
-/// {queue:0,connect:5000,client:60000,server:180000}
+/// {queue:0,connect:5000,client:60s,server:180000ms}
 /// ```
 ///
-/// All parameters are optional. Values are in milliseconds.
+/// All parameters are optional. Values can be specified as:
+/// - Plain numbers: milliseconds (e.g., "5000")
+/// - With 'ms' suffix: milliseconds (e.g., "5000ms")
+/// - With 's' suffix: seconds (e.g., "5s")
+///
+/// Client and server timeouts are clamped to a maximum of 60 minutes.
 ///
 /// # Supported Parameters
 ///
 /// * `queue` - Time to wait in queue for a connection slot (0 = unlimited)
 /// * `connect` - Time to wait for a connection to be established to a backend
-/// * `client` - Client inactivity timeout
-/// * `server` - Server response timeout
+/// * `client` - Client inactivity timeout (max 60 minutes)
+/// * `server` - Server response timeout (max 60 minutes)
 ///
 /// # Arguments
 ///
@@ -591,27 +651,35 @@ pub fn is_loadbalancer_enabled(input: &str) -> bool {
 ///
 /// # Returns
 ///
-/// A TimeoutConfig with values from the input merged with defaults
-pub fn parse_timeouts(input: &str) -> TimeoutConfig {
+/// A TimeoutConfig with values from the input merged with defaults, or an error
+/// if any timeout value is invalid.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - A timeout value has an invalid format (e.g., "5min", "abc")
+/// - A timeout parameter format is invalid (missing colon)
+/// - An unknown timeout parameter is specified
+pub fn parse_timeouts(input: &str) -> Result<TimeoutConfig> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return TimeoutConfig::default();
+        return Ok(TimeoutConfig::default());
     }
 
     // Remove the curly braces if present
     let content = trimmed.trim_start_matches('{').trim_end_matches('}');
     if content.is_empty() {
-        return TimeoutConfig::default();
+        return Ok(TimeoutConfig::default());
     }
 
     let mut config = TimeoutConfig::default();
+    let max_client_server = Duration::from_millis(MAX_TIMEOUT_CLIENT_SERVER_MS);
 
     // Split by comma and parse each key:value pair
     for pair in content.split(',') {
         let parts: Vec<&str> = pair.splitn(2, ':').collect();
         if parts.len() != 2 {
-            warn!("Invalid timeout parameter format: {}", pair);
-            continue;
+            anyhow::bail!("Invalid timeout parameter format: {}", pair);
         }
 
         let key = parts[0].trim();
@@ -619,40 +687,30 @@ pub fn parse_timeouts(input: &str) -> TimeoutConfig {
 
         match key {
             "queue" => {
-                if let Ok(v) = value.parse::<u32>() {
-                    config.queue = v;
-                } else {
-                    warn!("Invalid queue timeout value: {}", value);
-                }
+                config.queue = parse_timeout_value(value)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid queue timeout value: {}", value))?;
             }
             "connect" => {
-                if let Ok(v) = value.parse::<u32>() {
-                    config.connect = v;
-                } else {
-                    warn!("Invalid connect timeout value: {}", value);
-                }
+                config.connect = parse_timeout_value(value)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid connect timeout value: {}", value))?;
             }
             "client" => {
-                if let Ok(v) = value.parse::<u32>() {
-                    config.client = v;
-                } else {
-                    warn!("Invalid client timeout value: {}", value);
-                }
+                let duration = parse_timeout_value(value)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid client timeout value: {}", value))?;
+                config.client = duration.min(max_client_server);
             }
             "server" => {
-                if let Ok(v) = value.parse::<u32>() {
-                    config.server = v;
-                } else {
-                    warn!("Invalid server timeout value: {}", value);
-                }
+                let duration = parse_timeout_value(value)
+                    .ok_or_else(|| anyhow::anyhow!("Invalid server timeout value: {}", value))?;
+                config.server = duration.min(max_client_server);
             }
             _ => {
-                warn!("Unknown timeout parameter: {}", key);
+                anyhow::bail!("Unknown timeout parameter: {}", key);
             }
         }
     }
 
-    config
+    Ok(config)
 }
 
 /// Parse the syslog endpoint from metadata
@@ -877,7 +935,7 @@ pub fn configure_haproxy(real_dir: &Path) -> Result<bool> {
 
     // Get timeout metadata and render defaults configuration
     let timeouts_data = mdata_get(TIMEOUTS_KEY)?;
-    let timeouts = parse_timeouts(&timeouts_data);
+    let timeouts = parse_timeouts(&timeouts_data).context("Failed to parse timeout configuration")?;
     let defaults_config = DefaultsConfig { timeouts };
     let rendered_defaults = defaults_config
         .render()
@@ -2010,90 +2068,94 @@ backend be0
     #[test]
     fn test_parse_timeouts_empty() {
         // Empty string should return defaults
-        let config = parse_timeouts("");
+        let config = parse_timeouts("").unwrap();
         assert_eq!(config, TimeoutConfig::default());
 
         // Whitespace only should return defaults
-        let config = parse_timeouts("   ");
+        let config = parse_timeouts("   ").unwrap();
         assert_eq!(config, TimeoutConfig::default());
 
         // Empty braces should return defaults
-        let config = parse_timeouts("{}");
+        let config = parse_timeouts("{}").unwrap();
         assert_eq!(config, TimeoutConfig::default());
     }
 
     #[test]
     fn test_parse_timeouts_full() {
         // Test with all timeout values specified
-        let config = parse_timeouts("{queue:100,connect:5000,client:60000,server:180000}");
-        assert_eq!(config.queue, 100);
-        assert_eq!(config.connect, 5000);
-        assert_eq!(config.client, 60000);
-        assert_eq!(config.server, 180000);
+        let config = parse_timeouts("{queue:100,connect:5000,client:60000,server:180000}").unwrap();
+        assert_eq!(config.queue_ms(), 100);
+        assert_eq!(config.connect_ms(), 5000);
+        assert_eq!(config.client_ms(), 60000);
+        assert_eq!(config.server_ms(), 180000);
     }
 
     #[test]
     fn test_parse_timeouts_partial() {
         // Test with only some values specified - others should use defaults
-        let config = parse_timeouts("{connect:5000,server:180000}");
-        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE);
-        assert_eq!(config.connect, 5000);
-        assert_eq!(config.client, DEFAULT_TIMEOUT_CLIENT);
-        assert_eq!(config.server, 180000);
+        let config = parse_timeouts("{connect:5000,server:180000}").unwrap();
+        assert_eq!(config.queue_ms(), DEFAULT_TIMEOUT_QUEUE_MS);
+        assert_eq!(config.connect_ms(), 5000);
+        assert_eq!(config.client_ms(), DEFAULT_TIMEOUT_CLIENT_MS);
+        assert_eq!(config.server_ms(), 180000);
     }
 
     #[test]
     fn test_parse_timeouts_single() {
         // Test with single timeout override
-        let config = parse_timeouts("{server:300000}");
-        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE);
-        assert_eq!(config.connect, DEFAULT_TIMEOUT_CONNECT);
-        assert_eq!(config.client, DEFAULT_TIMEOUT_CLIENT);
-        assert_eq!(config.server, 300000);
+        let config = parse_timeouts("{server:300000}").unwrap();
+        assert_eq!(config.queue_ms(), DEFAULT_TIMEOUT_QUEUE_MS);
+        assert_eq!(config.connect_ms(), DEFAULT_TIMEOUT_CONNECT_MS);
+        assert_eq!(config.client_ms(), DEFAULT_TIMEOUT_CLIENT_MS);
+        assert_eq!(config.server_ms(), 300000);
     }
 
     #[test]
     fn test_parse_timeouts_with_whitespace() {
         // Test with whitespace around values
-        let config = parse_timeouts("{ queue : 50 , connect : 3000 }");
-        assert_eq!(config.queue, 50);
-        assert_eq!(config.connect, 3000);
-        assert_eq!(config.client, DEFAULT_TIMEOUT_CLIENT);
-        assert_eq!(config.server, DEFAULT_TIMEOUT_SERVER);
+        let config = parse_timeouts("{ queue : 50 , connect : 3000 }").unwrap();
+        assert_eq!(config.queue_ms(), 50);
+        assert_eq!(config.connect_ms(), 3000);
+        assert_eq!(config.client_ms(), DEFAULT_TIMEOUT_CLIENT_MS);
+        assert_eq!(config.server_ms(), DEFAULT_TIMEOUT_SERVER_MS);
     }
 
     #[test]
     fn test_parse_timeouts_without_braces() {
         // Test without braces (should still work)
-        let config = parse_timeouts("queue:100,connect:5000");
-        assert_eq!(config.queue, 100);
-        assert_eq!(config.connect, 5000);
+        let config = parse_timeouts("queue:100,connect:5000").unwrap();
+        assert_eq!(config.queue_ms(), 100);
+        assert_eq!(config.connect_ms(), 5000);
     }
 
     #[test]
     fn test_parse_timeouts_invalid_values() {
-        // Invalid values should be ignored and default used
-        let config = parse_timeouts("{queue:abc,connect:5000}");
-        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE); // default because invalid
-        assert_eq!(config.connect, 5000);
+        // Invalid values should cause an error
+        let result = parse_timeouts("{queue:abc,connect:5000}");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid queue timeout value"));
+
+        // Invalid suffix should cause an error
+        let result = parse_timeouts("{server:5min}");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid server timeout value"));
     }
 
     #[test]
     fn test_parse_timeouts_unknown_keys() {
-        // Unknown keys should be ignored
-        let config = parse_timeouts("{unknown:123,connect:5000}");
-        assert_eq!(config.connect, 5000);
-        // Default values for others
-        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE);
+        // Unknown keys should cause an error
+        let result = parse_timeouts("{unknown:123,connect:5000}");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown timeout parameter"));
     }
 
     #[test]
     fn test_timeout_config_default() {
         let config = TimeoutConfig::default();
-        assert_eq!(config.queue, DEFAULT_TIMEOUT_QUEUE);
-        assert_eq!(config.connect, DEFAULT_TIMEOUT_CONNECT);
-        assert_eq!(config.client, DEFAULT_TIMEOUT_CLIENT);
-        assert_eq!(config.server, DEFAULT_TIMEOUT_SERVER);
+        assert_eq!(config.queue_ms(), DEFAULT_TIMEOUT_QUEUE_MS);
+        assert_eq!(config.connect_ms(), DEFAULT_TIMEOUT_CONNECT_MS);
+        assert_eq!(config.client_ms(), DEFAULT_TIMEOUT_CLIENT_MS);
+        assert_eq!(config.server_ms(), DEFAULT_TIMEOUT_SERVER_MS);
     }
 
     #[test]
@@ -2118,10 +2180,10 @@ backend be0
         // Test with custom timeouts
         let defaults_config = DefaultsConfig {
             timeouts: TimeoutConfig {
-                queue: 100,
-                connect: 5000,
-                client: 60000,
-                server: 180000,
+                queue: Duration::from_millis(100),
+                connect: Duration::from_millis(5000),
+                client: Duration::from_millis(60000),
+                server: Duration::from_millis(180000),
             },
         };
         let rendered = defaults_config
@@ -2133,5 +2195,79 @@ backend be0
         assert!(rendered.contains("timeout connect 5000"));
         assert!(rendered.contains("timeout client  60000"));
         assert!(rendered.contains("timeout server  180000"));
+    }
+
+    #[test]
+    fn test_parse_timeout_value_milliseconds() {
+        // Plain numbers should be parsed as milliseconds
+        assert_eq!(parse_timeout_value("5000"), Some(Duration::from_millis(5000)));
+        assert_eq!(parse_timeout_value("0"), Some(Duration::from_millis(0)));
+        assert_eq!(parse_timeout_value("100"), Some(Duration::from_millis(100)));
+
+        // With explicit ms suffix
+        assert_eq!(parse_timeout_value("5000ms"), Some(Duration::from_millis(5000)));
+        assert_eq!(parse_timeout_value("0ms"), Some(Duration::from_millis(0)));
+        assert_eq!(parse_timeout_value("100ms"), Some(Duration::from_millis(100)));
+
+        // With whitespace
+        assert_eq!(parse_timeout_value(" 5000 "), Some(Duration::from_millis(5000)));
+        assert_eq!(parse_timeout_value(" 5000 ms"), Some(Duration::from_millis(5000)));
+    }
+
+    #[test]
+    fn test_parse_timeout_value_seconds() {
+        // With s suffix should be parsed as seconds
+        assert_eq!(parse_timeout_value("5s"), Some(Duration::from_secs(5)));
+        assert_eq!(parse_timeout_value("60s"), Some(Duration::from_secs(60)));
+        assert_eq!(parse_timeout_value("0s"), Some(Duration::from_secs(0)));
+        assert_eq!(parse_timeout_value(" 30 s"), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_parse_timeout_value_invalid() {
+        // Invalid values should return None
+        assert_eq!(parse_timeout_value("abc"), None);
+        assert_eq!(parse_timeout_value("5x"), None);
+        assert_eq!(parse_timeout_value(""), None);
+        assert_eq!(parse_timeout_value("-5"), None);
+    }
+
+    #[test]
+    fn test_parse_timeouts_with_suffixes() {
+        // Test with millisecond suffixes
+        let config = parse_timeouts("{queue:100ms,connect:5000ms}").unwrap();
+        assert_eq!(config.queue_ms(), 100);
+        assert_eq!(config.connect_ms(), 5000);
+
+        // Test with second suffixes
+        let config = parse_timeouts("{client:60s,server:180s}").unwrap();
+        assert_eq!(config.client_ms(), 60000);
+        assert_eq!(config.server_ms(), 180000);
+
+        // Test with mixed formats
+        let config = parse_timeouts("{queue:100,connect:5s,client:60000ms,server:180s}").unwrap();
+        assert_eq!(config.queue_ms(), 100);
+        assert_eq!(config.connect_ms(), 5000);
+        assert_eq!(config.client_ms(), 60000);
+        assert_eq!(config.server_ms(), 180000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_clamping() {
+        // Client and server should be clamped to MAX_TIMEOUT_CLIENT_SERVER_MS (60 minutes)
+        let very_large_ms = MAX_TIMEOUT_CLIENT_SERVER_MS + 1000000; // More than 60 minutes
+        let config = parse_timeouts(&format!("{{client:{},server:{}}}", very_large_ms, very_large_ms)).unwrap();
+        assert_eq!(config.client_ms(), MAX_TIMEOUT_CLIENT_SERVER_MS);
+        assert_eq!(config.server_ms(), MAX_TIMEOUT_CLIENT_SERVER_MS);
+
+        // Queue and connect should NOT be clamped
+        let config = parse_timeouts(&format!("{{queue:{},connect:{}}}", very_large_ms, very_large_ms)).unwrap();
+        assert_eq!(config.queue_ms(), very_large_ms);
+        assert_eq!(config.connect_ms(), very_large_ms);
+
+        // Test clamping with seconds
+        let config = parse_timeouts("{client:7200s,server:7200s}").unwrap(); // 2 hours in seconds
+        assert_eq!(config.client_ms(), MAX_TIMEOUT_CLIENT_SERVER_MS); // Clamped to 60 minutes
+        assert_eq!(config.server_ms(), MAX_TIMEOUT_CLIENT_SERVER_MS);
     }
 }

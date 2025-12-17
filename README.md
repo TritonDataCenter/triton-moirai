@@ -239,30 +239,46 @@ The `cloud.tritoncompute:timeouts` value uses a JSON-like syntax with key:value 
 enclosed in curly braces:
 
 ```
-{queue:0,connect:5000,client:60000,server:180000}
+{queue:0,connect:5000,client:60s,server:180000ms}
 ```
 
 All parameters are optional. Any timeout not specified will use its default value.
 
+### Timeout Value Formats
+
+Timeout values can be specified in three formats:
+
+| Format | Description | Example |
+|--------|-------------|---------|
+| Plain number | Milliseconds | `5000` = 5000ms |
+| Number with `ms` | Milliseconds (explicit) | `5000ms` = 5000ms |
+| Number with `s` | Seconds | `60s` = 60000ms |
+
 ### Supported Timeout Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `queue`   | 0       | Time (ms) to wait in queue for a connection slot. 0 = unlimited |
-| `connect` | 2000    | Time (ms) to wait for a connection to be established to a backend |
-| `client`  | 55000   | Client inactivity timeout (ms) |
-| `server`  | 120000  | Server response timeout (ms) |
+| Parameter | Default | Max | Description |
+|-----------|---------|-----|-------------|
+| `queue`   | 0       | - | Time to wait in queue for a connection slot. 0 = unlimited |
+| `connect` | 2000    | - | Time to wait for a connection to be established to a backend |
+| `client`  | 55000   | 60 min | Client inactivity timeout |
+| `server`  | 120000  | 60 min | Server response timeout |
+
+**Note:** Client and server timeouts are clamped to a maximum of 60 minutes (3600000ms).
 
 ### Timeout Examples
 
 ```bash
-# Override only the server timeout (useful for long-running requests)
+# Override server timeout using seconds
+triton instance metadata set <instance> \
+  cloud.tritoncompute:timeouts='{server:300s}'
+
+# Override server timeout using milliseconds (equivalent to above)
 triton instance metadata set <instance> \
   cloud.tritoncompute:timeouts='{server:300000}'
 
-# Override multiple timeouts
+# Mix different formats
 triton instance metadata set <instance> \
-  cloud.tritoncompute:timeouts='{connect:5000,client:60000,server:180000}'
+  cloud.tritoncompute:timeouts='{connect:5s,client:60s,server:180000ms}'
 
 # Override all timeouts
 triton instance metadata set <instance> \
@@ -275,7 +291,7 @@ triton instance metadata set <instance> \
 triton instance create -w -t triton.cns.services=frontend \
   -m cloud.tritoncompute:portmap="http://80:web.svc.${UUID?}.${CNS_DOMAIN?}:80" \
   -m cloud.tritoncompute:loadbalancer=true \
-  -m cloud.tritoncompute:timeouts='{server:180000}' \
+  -m cloud.tritoncompute:timeouts='{server:180s}' \
   -n frontend \
   ${IMAGE?} ${PACKAGE?}
 ```
@@ -285,8 +301,8 @@ triton instance create -w -t triton.cns.services=frontend \
 Timeout configuration can be updated dynamically without instance restart:
 
 ```bash
-# Update timeouts
-triton instance metadata set <instance> cloud.tritoncompute:timeouts='{server:300000}'
+# Update timeouts (using seconds)
+triton instance metadata set <instance> cloud.tritoncompute:timeouts='{server:300s}'
 
 # Remove custom timeouts (reverts to defaults)
 triton instance metadata delete <instance> cloud.tritoncompute:timeouts
