@@ -48,8 +48,65 @@ const HAPROXY_RESOLVER_CFG: &str = include_str!("../templates/002-resolver.cfg")
 // Path to mdata-get command for illumos
 pub const MDATA_GET_PATH: &str = "/usr/sbin/mdata-get";
 
-// Type alias for health check parameters tuple
-type HealthCheckParams = (Option<String>, Option<u16>, Option<u16>, Option<u16>);
+/// Keys for health check configuration parameters
+#[derive(strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+enum HealthCheckKey {
+    Check,
+    Port,
+    Rise,
+    Fall,
+}
+
+/// Parsed health check parameters
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct HealthCheckConfig {
+    pub check: Option<String>,
+    pub port: Option<u16>,
+    pub rise: Option<u16>,
+    pub fall: Option<u16>,
+}
+
+impl HealthCheckConfig {
+    /// Try to set a field from a key-value pair.
+    /// Returns Ok(true) if the key was recognized, Ok(false) if unknown (logged as warning).
+    /// Returns Err for known keys with invalid values.
+    fn set_from_kv(&mut self, key: &str, value: &str) -> std::result::Result<bool, String> {
+        let Ok(health_key) = HealthCheckKey::from_str(key) else {
+            warn!("Unknown health check parameter '{}' ignored", key);
+            return Ok(false);
+        };
+
+        match health_key {
+            HealthCheckKey::Check => {
+                if value.is_empty() {
+                    return Err("Health check endpoint cannot be empty".into());
+                }
+                self.check = Some(value.to_string());
+            }
+            HealthCheckKey::Port => {
+                self.port = Some(
+                    parse_and_validate_port(value, "health check").map_err(|e| e.to_string())?,
+                );
+            }
+            HealthCheckKey::Rise => {
+                self.rise = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("Invalid rise value: {}", value))?,
+                );
+            }
+            HealthCheckKey::Fall => {
+                self.fall = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("Invalid fall value: {}", value))?,
+                );
+            }
+        }
+        Ok(true)
+    }
+}
 
 #[derive(
     strum::Display,
@@ -239,22 +296,21 @@ impl FromStr for Service {
         let (listen_port, backend_name, backend_port) = parse_service_parts(service_part)?;
 
         // Parse health check parameters if present
-        let (http_check_endpoint, check_port, check_rise, check_fall) =
-            if let Some(params) = health_params {
-                parse_health_check_params(params)?
-            } else {
-                (None, None, None, None)
-            };
+        let health = if let Some(params) = health_params {
+            parse_health_check_params(params)?
+        } else {
+            HealthCheckConfig::default()
+        };
 
         Ok(Service {
             service_type,
             listen_port,
             backend_name,
             backend_port,
-            http_check_endpoint,
-            check_port,
-            check_rise,
-            check_fall,
+            http_check_endpoint: health.check,
+            check_port: health.port,
+            check_rise: health.rise,
+            check_fall: health.fall,
         })
     }
 }
@@ -315,6 +371,32 @@ fn parse_and_validate_port(
         })
 }
 
+/// Parse a mini JSON-like string of key:value pairs
+///
+/// Accepts format: `{key1:value1,key2:value2}` or `key1:value1,key2:value2`
+/// Braces are optional. Empty pairs are skipped.
+///
+/// # Returns
+/// Vec of (key, value) tuples on success, or error message if any pair is malformed.
+fn parse_kv_pairs(s: &str) -> std::result::Result<Vec<(&str, &str)>, String> {
+    let content = s.trim().trim_start_matches('{').trim_end_matches('}');
+    let mut pairs = Vec::new();
+
+    for pair in content.split(',') {
+        if pair.trim().is_empty() {
+            continue;
+        }
+        let mut parts = pair.splitn(2, ':');
+        let key = parts.next().map(str::trim).unwrap_or("");
+        let value = parts
+            .next()
+            .map(str::trim)
+            .ok_or_else(|| format!("Invalid parameter format (missing ':'): {}", pair))?;
+        pairs.push((key, value));
+    }
+    Ok(pairs)
+}
+
 /// Parse health check parameters from a JSON-like string.
 ///
 /// This function parses health check configuration parameters embedded in service
@@ -337,67 +419,25 @@ fn parse_and_validate_port(
 ///
 /// # Returns
 ///
-/// A tuple containing `(http_check_endpoint, check_port, check_rise, check_fall)`
-/// where each value is `Some(value)` if specified, or `None` if not provided.
+/// A HealthCheckConfig with fields set from the parsed parameters.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// * The parameter format is invalid (missing colon separator)
 /// * Port values are not valid u16 integers
-/// * Rise/fall values are not valid u16 integers  
-/// * Unknown parameter names are encountered
+/// * Rise/fall values are not valid u16 integers
 /// * The check endpoint is empty
-fn parse_health_check_params(s: &str) -> std::result::Result<HealthCheckParams, Box<dyn StdError>> {
-    // Remove the curly braces
-    let trimmed = s.trim_start_matches('{').trim_end_matches('}');
+///
+/// Unknown parameter names are logged as warnings and ignored.
+fn parse_health_check_params(s: &str) -> std::result::Result<HealthCheckConfig, Box<dyn StdError>> {
+    let mut config = HealthCheckConfig::default();
 
-    let mut http_check_endpoint = None;
-    let mut check_port = None;
-    let mut check_rise = None;
-    let mut check_fall = None;
-
-    // Split by comma and parse each key:value pair
-    for pair in trimmed.split(',') {
-        let parts: Vec<&str> = pair.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(format!("Invalid health check parameter format: {}", pair).into());
-        }
-
-        let key = parts[0].trim();
-        let value = parts[1].trim();
-
-        match key {
-            "check" => {
-                if value.is_empty() {
-                    return Err("Health check endpoint cannot be empty".into());
-                }
-                http_check_endpoint = Some(value.to_string());
-            }
-            "port" => {
-                check_port = Some(parse_and_validate_port(value, "health check")?);
-            }
-            "rise" => {
-                check_rise = Some(
-                    value
-                        .parse::<u16>()
-                        .map_err(|_| format!("Invalid rise value: {}", value))?,
-                );
-            }
-            "fall" => {
-                check_fall = Some(
-                    value
-                        .parse::<u16>()
-                        .map_err(|_| format!("Invalid fall value: {}", value))?,
-                );
-            }
-            _ => {
-                return Err(format!("Unknown health check parameter: {}", key).into());
-            }
-        }
+    for (key, value) in parse_kv_pairs(s)? {
+        config.set_from_kv(key, value)?;
     }
 
-    Ok((http_check_endpoint, check_port, check_rise, check_fall))
+    Ok(config)
 }
 
 #[derive(Template)]
@@ -430,6 +470,16 @@ pub const DEFAULT_TIMEOUT_SERVER_MS: u64 = 120000;
 // Maximum allowed timeout for client/server (60 minutes in milliseconds)
 pub const MAX_TIMEOUT_CLIENT_SERVER_MS: u64 = 60 * 60 * 1000;
 
+/// Keys for timeout configuration parameters
+#[derive(strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+enum TimeoutKey {
+    Queue,
+    Connect,
+    Client,
+    Server,
+}
+
 /// Configuration for HAProxy timeouts
 ///
 /// All timeout values are stored as Duration.
@@ -460,6 +510,29 @@ impl TimeoutConfig {
     /// Returns the server timeout in milliseconds for HAProxy configuration
     pub fn server_ms(&self) -> u64 {
         self.server.as_millis() as u64
+    }
+
+    /// Try to set a field from a key-value pair.
+    /// Returns Ok(true) if the key was recognized, Ok(false) if unknown (logged as warning).
+    /// Returns Err for known keys with invalid values.
+    /// Client and server timeouts are clamped to MAX_TIMEOUT_CLIENT_SERVER_MS.
+    fn set_from_kv(&mut self, key: &str, value: &str) -> std::result::Result<bool, String> {
+        let Ok(timeout_key) = TimeoutKey::from_str(key) else {
+            warn!("Unknown timeout parameter '{}' ignored", key);
+            return Ok(false);
+        };
+
+        let duration = parse_timeout_value(value)
+            .ok_or_else(|| format!("Invalid {} timeout value: {}", key, value))?;
+
+        let max_client_server = Duration::from_millis(MAX_TIMEOUT_CLIENT_SERVER_MS);
+        match timeout_key {
+            TimeoutKey::Queue => self.queue = duration,
+            TimeoutKey::Connect => self.connect = duration,
+            TimeoutKey::Client => self.client = duration.min(max_client_server),
+            TimeoutKey::Server => self.server = duration.min(max_client_server),
+        }
+        Ok(true)
     }
 }
 
@@ -663,55 +736,20 @@ fn parse_timeout_value(value: &str) -> Option<Duration> {
 /// Returns an error if:
 /// - A timeout value has an invalid format (e.g., "5min", "abc")
 /// - A timeout parameter format is invalid (missing colon)
-/// - An unknown timeout parameter is specified
+///
+/// Unknown parameter names are logged as warnings and ignored.
 pub fn parse_timeouts(input: &str) -> Result<TimeoutConfig> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Ok(TimeoutConfig::default());
     }
 
-    // Remove the curly braces if present
-    let content = trimmed.trim_start_matches('{').trim_end_matches('}');
-    if content.is_empty() {
-        return Ok(TimeoutConfig::default());
-    }
-
     let mut config = TimeoutConfig::default();
-    let max_client_server = Duration::from_millis(MAX_TIMEOUT_CLIENT_SERVER_MS);
 
-    // Split by comma and parse each key:value pair
-    for pair in content.split(',') {
-        let parts: Vec<&str> = pair.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            anyhow::bail!("Invalid timeout parameter format: {}", pair);
-        }
-
-        let key = parts[0].trim();
-        let value = parts[1].trim();
-
-        match key {
-            "queue" => {
-                config.queue = parse_timeout_value(value)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid queue timeout value: {}", value))?;
-            }
-            "connect" => {
-                config.connect = parse_timeout_value(value)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid connect timeout value: {}", value))?;
-            }
-            "client" => {
-                let duration = parse_timeout_value(value)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid client timeout value: {}", value))?;
-                config.client = duration.min(max_client_server);
-            }
-            "server" => {
-                let duration = parse_timeout_value(value)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid server timeout value: {}", value))?;
-                config.server = duration.min(max_client_server);
-            }
-            _ => {
-                anyhow::bail!("Unknown timeout parameter: {}", key);
-            }
-        }
+    for (key, value) in parse_kv_pairs(trimmed).map_err(|e| anyhow::anyhow!("{}", e))? {
+        config
+            .set_from_kv(key, value)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
     Ok(config)
@@ -1814,41 +1852,81 @@ backend be0
     }
 
     #[test]
+    fn test_parse_kv_pairs() {
+        // Basic parsing with braces
+        let pairs = parse_kv_pairs("{foo:bar,baz:qux}").unwrap();
+        assert_eq!(pairs, vec![("foo", "bar"), ("baz", "qux")]);
+
+        // Without braces
+        let pairs = parse_kv_pairs("foo:bar,baz:qux").unwrap();
+        assert_eq!(pairs, vec![("foo", "bar"), ("baz", "qux")]);
+
+        // Value with colon (splitn(2, ':') preserves it)
+        let pairs = parse_kv_pairs("{check:/health:8080}").unwrap();
+        assert_eq!(pairs, vec![("check", "/health:8080")]);
+
+        // Empty input
+        let pairs = parse_kv_pairs("{}").unwrap();
+        assert!(pairs.is_empty());
+
+        let pairs = parse_kv_pairs("").unwrap();
+        assert!(pairs.is_empty());
+
+        // Whitespace handling
+        let pairs = parse_kv_pairs("{ foo : bar , baz : qux }").unwrap();
+        assert_eq!(pairs, vec![("foo", "bar"), ("baz", "qux")]);
+
+        // Single pair
+        let pairs = parse_kv_pairs("{key:value}").unwrap();
+        assert_eq!(pairs, vec![("key", "value")]);
+
+        // Missing colon should error
+        let result = parse_kv_pairs("{foo}");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing ':'"));
+    }
+
+    #[test]
     fn test_parse_health_check_params() {
         // Test full parameters
         let result = parse_health_check_params("{check:/healthz,port:32150,rise:30,fall:1}");
         assert!(result.is_ok());
-        let (check, port, rise, fall) = result.unwrap();
-        assert_eq!(check, Some("/healthz".to_string()));
-        assert_eq!(port, Some(32150));
-        assert_eq!(rise, Some(30));
-        assert_eq!(fall, Some(1));
+        let config = result.unwrap();
+        assert_eq!(config.check, Some("/healthz".to_string()));
+        assert_eq!(config.port, Some(32150));
+        assert_eq!(config.rise, Some(30));
+        assert_eq!(config.fall, Some(1));
 
         // Test partial parameters
         let result = parse_health_check_params("{check:/health,port:8080}");
         assert!(result.is_ok());
-        let (check, port, rise, fall) = result.unwrap();
-        assert_eq!(check, Some("/health".to_string()));
-        assert_eq!(port, Some(8080));
-        assert_eq!(rise, None);
-        assert_eq!(fall, None);
+        let config = result.unwrap();
+        assert_eq!(config.check, Some("/health".to_string()));
+        assert_eq!(config.port, Some(8080));
+        assert_eq!(config.rise, None);
+        assert_eq!(config.fall, None);
 
         // Test only check endpoint
         let result = parse_health_check_params("{check:/}");
         assert!(result.is_ok());
-        let (check, port, rise, fall) = result.unwrap();
-        assert_eq!(check, Some("/".to_string()));
-        assert_eq!(port, None);
-        assert_eq!(rise, None);
-        assert_eq!(fall, None);
+        let config = result.unwrap();
+        assert_eq!(config.check, Some("/".to_string()));
+        assert_eq!(config.port, None);
+        assert_eq!(config.rise, None);
+        assert_eq!(config.fall, None);
 
         // Test invalid format
         let result = parse_health_check_params("{check}");
         assert!(result.is_err());
 
-        // Test unknown parameter
+        // Test unknown parameter (logged as warning, ignored)
         let result = parse_health_check_params("{check:/health,unknown:value}");
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.check, Some("/health".to_string()));
+        assert_eq!(config.port, None);
+        assert_eq!(config.rise, None);
+        assert_eq!(config.fall, None);
     }
 
     #[test]
@@ -2154,13 +2232,16 @@ backend be0
 
     #[test]
     fn test_parse_timeouts_unknown_keys() {
-        // Unknown keys should cause an error
+        // Unknown keys should be silently ignored
         let result = parse_timeouts("{unknown:123,connect:5000}");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown timeout parameter"));
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.connect, Duration::from_millis(5000));
+        // Other values should remain at defaults
+        assert_eq!(
+            config.queue,
+            Duration::from_millis(DEFAULT_TIMEOUT_QUEUE_MS)
+        );
     }
 
     #[test]
