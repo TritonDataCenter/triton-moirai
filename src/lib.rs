@@ -14,6 +14,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
+use std::time::Duration;
 
 pub mod certificates;
 
@@ -32,6 +33,7 @@ pub const METRICS_PORT_KEY: &str = "cloud.tritoncompute:metrics_port";
 pub const CERT_NAME_KEY: &str = "cloud.tritoncompute:certificate_name";
 pub const LOADBALANCER_KEY: &str = "cloud.tritoncompute:loadbalancer";
 pub const SYSLOG_KEY: &str = "cloud.tritoncompute:syslog";
+pub const TIMEOUTS_KEY: &str = "cloud.tritoncompute:timeouts";
 
 // File path constants
 pub const FULL_CHAIN_PEM_PATH: &str = "/opt/triton/tls/default/fullchain.pem";
@@ -41,14 +43,70 @@ pub const REAL_CONFIG_DIR: &str = "/opt/local/etc/haproxy.cfg";
 pub const HAPROXY_BINARY: &str = "/opt/local/sbin/haproxy";
 
 // Embedded HAProxy config files
-const HAPROXY_DEFAULTS_CFG: &str = include_str!("../templates/001-defaults.cfg");
 const HAPROXY_RESOLVER_CFG: &str = include_str!("../templates/002-resolver.cfg");
 
 // Path to mdata-get command for illumos
 pub const MDATA_GET_PATH: &str = "/usr/sbin/mdata-get";
 
-// Type alias for health check parameters tuple
-type HealthCheckParams = (Option<String>, Option<u16>, Option<u16>, Option<u16>);
+/// Keys for health check configuration parameters
+#[derive(strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+enum HealthCheckKey {
+    Check,
+    Port,
+    Rise,
+    Fall,
+}
+
+/// Parsed health check parameters
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct HealthCheckConfig {
+    pub check: Option<String>,
+    pub port: Option<u16>,
+    pub rise: Option<u16>,
+    pub fall: Option<u16>,
+}
+
+impl HealthCheckConfig {
+    /// Try to set a field from a key-value pair.
+    /// Returns Ok(true) if the key was recognized, Ok(false) if unknown (logged as warning).
+    /// Returns Err for known keys with invalid values.
+    fn set_from_kv(&mut self, key: &str, value: &str) -> std::result::Result<bool, String> {
+        let Ok(health_key) = HealthCheckKey::from_str(key) else {
+            warn!("Unknown health check parameter '{}' ignored", key);
+            return Ok(false);
+        };
+
+        match health_key {
+            HealthCheckKey::Check => {
+                if value.is_empty() {
+                    return Err("Health check endpoint cannot be empty".into());
+                }
+                self.check = Some(value.to_string());
+            }
+            HealthCheckKey::Port => {
+                self.port = Some(
+                    parse_and_validate_port(value, "health check").map_err(|e| e.to_string())?,
+                );
+            }
+            HealthCheckKey::Rise => {
+                self.rise = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("Invalid rise value: {}", value))?,
+                );
+            }
+            HealthCheckKey::Fall => {
+                self.fall = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("Invalid fall value: {}", value))?,
+                );
+            }
+        }
+        Ok(true)
+    }
+}
 
 #[derive(
     strum::Display,
@@ -238,22 +296,21 @@ impl FromStr for Service {
         let (listen_port, backend_name, backend_port) = parse_service_parts(service_part)?;
 
         // Parse health check parameters if present
-        let (http_check_endpoint, check_port, check_rise, check_fall) =
-            if let Some(params) = health_params {
-                parse_health_check_params(params)?
-            } else {
-                (None, None, None, None)
-            };
+        let health = if let Some(params) = health_params {
+            parse_health_check_params(params)?
+        } else {
+            HealthCheckConfig::default()
+        };
 
         Ok(Service {
             service_type,
             listen_port,
             backend_name,
             backend_port,
-            http_check_endpoint,
-            check_port,
-            check_rise,
-            check_fall,
+            http_check_endpoint: health.check,
+            check_port: health.port,
+            check_rise: health.rise,
+            check_fall: health.fall,
         })
     }
 }
@@ -314,6 +371,32 @@ fn parse_and_validate_port(
         })
 }
 
+/// Parse a mini JSON-like string of key:value pairs
+///
+/// Accepts format: `{key1:value1,key2:value2}` or `key1:value1,key2:value2`
+/// Braces are optional. Empty pairs are skipped.
+///
+/// # Returns
+/// Vec of (key, value) tuples on success, or error message if any pair is malformed.
+fn parse_kv_pairs(s: &str) -> std::result::Result<Vec<(&str, &str)>, String> {
+    let content = s.trim().trim_start_matches('{').trim_end_matches('}');
+    let mut pairs = Vec::new();
+
+    for pair in content.split(',') {
+        if pair.trim().is_empty() {
+            continue;
+        }
+        let mut parts = pair.splitn(2, ':');
+        let key = parts.next().map(str::trim).unwrap_or("");
+        let value = parts
+            .next()
+            .map(str::trim)
+            .ok_or_else(|| format!("Invalid parameter format (missing ':'): {}", pair))?;
+        pairs.push((key, value));
+    }
+    Ok(pairs)
+}
+
 /// Parse health check parameters from a JSON-like string.
 ///
 /// This function parses health check configuration parameters embedded in service
@@ -336,67 +419,25 @@ fn parse_and_validate_port(
 ///
 /// # Returns
 ///
-/// A tuple containing `(http_check_endpoint, check_port, check_rise, check_fall)`
-/// where each value is `Some(value)` if specified, or `None` if not provided.
+/// A HealthCheckConfig with fields set from the parsed parameters.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// * The parameter format is invalid (missing colon separator)
 /// * Port values are not valid u16 integers
-/// * Rise/fall values are not valid u16 integers  
-/// * Unknown parameter names are encountered
+/// * Rise/fall values are not valid u16 integers
 /// * The check endpoint is empty
-fn parse_health_check_params(s: &str) -> std::result::Result<HealthCheckParams, Box<dyn StdError>> {
-    // Remove the curly braces
-    let trimmed = s.trim_start_matches('{').trim_end_matches('}');
+///
+/// Unknown parameter names are logged as warnings and ignored.
+fn parse_health_check_params(s: &str) -> std::result::Result<HealthCheckConfig, Box<dyn StdError>> {
+    let mut config = HealthCheckConfig::default();
 
-    let mut http_check_endpoint = None;
-    let mut check_port = None;
-    let mut check_rise = None;
-    let mut check_fall = None;
-
-    // Split by comma and parse each key:value pair
-    for pair in trimmed.split(',') {
-        let parts: Vec<&str> = pair.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return Err(format!("Invalid health check parameter format: {}", pair).into());
-        }
-
-        let key = parts[0].trim();
-        let value = parts[1].trim();
-
-        match key {
-            "check" => {
-                if value.is_empty() {
-                    return Err("Health check endpoint cannot be empty".into());
-                }
-                http_check_endpoint = Some(value.to_string());
-            }
-            "port" => {
-                check_port = Some(parse_and_validate_port(value, "health check")?);
-            }
-            "rise" => {
-                check_rise = Some(
-                    value
-                        .parse::<u16>()
-                        .map_err(|_| format!("Invalid rise value: {}", value))?,
-                );
-            }
-            "fall" => {
-                check_fall = Some(
-                    value
-                        .parse::<u16>()
-                        .map_err(|_| format!("Invalid fall value: {}", value))?,
-                );
-            }
-            _ => {
-                return Err(format!("Unknown health check parameter: {}", key).into());
-            }
-        }
+    for (key, value) in parse_kv_pairs(s)? {
+        config.set_from_kv(key, value)?;
     }
 
-    Ok((http_check_endpoint, check_port, check_rise, check_fall))
+    Ok(config)
 }
 
 #[derive(Template)]
@@ -418,6 +459,99 @@ pub struct MetricsConfig {
 #[template(path = "000-global.cfg.askama")]
 pub struct GlobalConfig {
     pub syslog_endpoint: Option<String>,
+}
+
+// Default timeout values (in milliseconds)
+pub const DEFAULT_TIMEOUT_QUEUE_MS: u64 = 0;
+pub const DEFAULT_TIMEOUT_CONNECT_MS: u64 = 2000;
+pub const DEFAULT_TIMEOUT_CLIENT_MS: u64 = 55000;
+pub const DEFAULT_TIMEOUT_SERVER_MS: u64 = 120000;
+
+// Maximum allowed timeout for client/server (60 minutes in milliseconds)
+pub const MAX_TIMEOUT_CLIENT_SERVER_MS: u64 = 60 * 60 * 1000;
+
+/// Keys for timeout configuration parameters
+#[derive(strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+enum TimeoutKey {
+    Queue,
+    Connect,
+    Client,
+    Server,
+}
+
+/// Configuration for HAProxy timeouts
+///
+/// All timeout values are stored as Duration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeoutConfig {
+    pub queue: Duration,
+    pub connect: Duration,
+    pub client: Duration,
+    pub server: Duration,
+}
+
+impl TimeoutConfig {
+    /// Returns the queue timeout in milliseconds for HAProxy configuration
+    pub fn queue_ms(&self) -> u64 {
+        self.queue.as_millis() as u64
+    }
+
+    /// Returns the connect timeout in milliseconds for HAProxy configuration
+    pub fn connect_ms(&self) -> u64 {
+        self.connect.as_millis() as u64
+    }
+
+    /// Returns the client timeout in milliseconds for HAProxy configuration
+    pub fn client_ms(&self) -> u64 {
+        self.client.as_millis() as u64
+    }
+
+    /// Returns the server timeout in milliseconds for HAProxy configuration
+    pub fn server_ms(&self) -> u64 {
+        self.server.as_millis() as u64
+    }
+
+    /// Try to set a field from a key-value pair.
+    /// Returns Ok(true) if the key was recognized, Ok(false) if unknown (logged as warning).
+    /// Returns Err for known keys with invalid values.
+    /// Client and server timeouts are clamped to MAX_TIMEOUT_CLIENT_SERVER_MS.
+    fn set_from_kv(&mut self, key: &str, value: &str) -> std::result::Result<bool, String> {
+        let Ok(timeout_key) = TimeoutKey::from_str(key) else {
+            warn!("Unknown timeout parameter '{}' ignored", key);
+            return Ok(false);
+        };
+
+        let duration = parse_timeout_value(value)
+            .ok_or_else(|| format!("Invalid {} timeout value: {}", key, value))?;
+
+        let max_client_server = Duration::from_millis(MAX_TIMEOUT_CLIENT_SERVER_MS);
+        match timeout_key {
+            TimeoutKey::Queue => self.queue = duration,
+            TimeoutKey::Connect => self.connect = duration,
+            TimeoutKey::Client => self.client = duration.min(max_client_server),
+            TimeoutKey::Server => self.server = duration.min(max_client_server),
+        }
+        Ok(true)
+    }
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            queue: Duration::from_millis(DEFAULT_TIMEOUT_QUEUE_MS),
+            connect: Duration::from_millis(DEFAULT_TIMEOUT_CONNECT_MS),
+            client: Duration::from_millis(DEFAULT_TIMEOUT_CLIENT_MS),
+            server: Duration::from_millis(DEFAULT_TIMEOUT_SERVER_MS),
+        }
+    }
+}
+
+/// Template for defaults configuration (includes timeouts)
+#[derive(Template)]
+#[template(path = "001-defaults.cfg.askama")]
+pub struct DefaultsConfig {
+    pub timeouts: TimeoutConfig,
 }
 
 /// Struct to track services that couldn't be parsed or validated
@@ -528,6 +662,97 @@ pub fn parse_max_rs(input: &str) -> usize {
 /// Returns a boolean indicating if the loadbalancer flag is enabled
 pub fn is_loadbalancer_enabled(input: &str) -> bool {
     input.trim().eq_ignore_ascii_case("true")
+}
+
+/// Parse a single timeout value string into a Duration
+///
+/// Supports the following formats:
+/// - Plain number: interpreted as milliseconds (e.g., "5000" = 5000ms)
+/// - Number with 'ms' suffix: milliseconds (e.g., "5000ms" = 5000ms)
+/// - Number with 's' suffix: seconds (e.g., "5s" = 5000ms)
+///
+/// # Arguments
+///
+/// * `value` - The timeout value string to parse
+///
+/// # Returns
+///
+/// Some(Duration) if parsing succeeds, None if the format is invalid
+fn parse_timeout_value(value: &str) -> Option<Duration> {
+    let trimmed = value.trim();
+
+    if let Some(stripped) = trimmed.strip_suffix("ms") {
+        // Milliseconds with explicit suffix
+        stripped
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(Duration::from_millis)
+    } else if let Some(stripped) = trimmed.strip_suffix('s') {
+        // Seconds with explicit suffix
+        stripped.trim().parse::<u64>().ok().map(Duration::from_secs)
+    } else {
+        // Plain number = milliseconds (no suffix)
+        trimmed.parse::<u64>().ok().map(Duration::from_millis)
+    }
+}
+
+/// Parse timeout overrides from metadata
+///
+/// Parses a JSON-like string containing timeout overrides. Any timeout not specified
+/// will use the default value.
+///
+/// # Format
+///
+/// ```text
+/// {queue:0,connect:5000,client:60s,server:180000ms}
+/// ```
+///
+/// All parameters are optional. Values can be specified as:
+/// - Plain numbers: milliseconds (e.g., "5000")
+/// - With 'ms' suffix: milliseconds (e.g., "5000ms")
+/// - With 's' suffix: seconds (e.g., "5s")
+///
+/// Client and server timeouts are clamped to a maximum of 60 minutes.
+///
+/// # Supported Parameters
+///
+/// * `queue` - Time to wait in queue for a connection slot (0 = unlimited)
+/// * `connect` - Time to wait for a connection to be established to a backend
+/// * `client` - Client inactivity timeout (max 60 minutes)
+/// * `server` - Server response timeout (max 60 minutes)
+///
+/// # Arguments
+///
+/// * `input` - The timeout configuration string
+///
+/// # Returns
+///
+/// A TimeoutConfig with values from the input merged with defaults, or an error
+/// if any timeout value is invalid.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - A timeout value has an invalid format (e.g., "5min", "abc")
+/// - A timeout parameter format is invalid (missing colon)
+///
+/// Unknown parameter names are logged as warnings and ignored.
+pub fn parse_timeouts(input: &str) -> Result<TimeoutConfig> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(TimeoutConfig::default());
+    }
+
+    let mut config = TimeoutConfig::default();
+
+    for (key, value) in parse_kv_pairs(trimmed).map_err(|e| anyhow::anyhow!("{}", e))? {
+        config
+            .set_from_kv(key, value)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+    }
+
+    Ok(config)
 }
 
 /// Parse the syslog endpoint from metadata
@@ -750,9 +975,18 @@ pub fn configure_haproxy(real_dir: &Path) -> Result<bool> {
     fs::write(candidate_dir.join("000-global.cfg"), &rendered_global)
         .context("Failed to write global config file")?;
 
-    // Write other embedded HAProxy config files directly
-    fs::write(candidate_dir.join("001-defaults.cfg"), HAPROXY_DEFAULTS_CFG)
+    // Get timeout metadata and render defaults configuration
+    let timeouts_data = mdata_get(TIMEOUTS_KEY)?;
+    let timeouts =
+        parse_timeouts(&timeouts_data).context("Failed to parse timeout configuration")?;
+    let defaults_config = DefaultsConfig { timeouts };
+    let rendered_defaults = defaults_config
+        .render()
+        .context("Failed to render defaults configuration template")?;
+    fs::write(candidate_dir.join("001-defaults.cfg"), &rendered_defaults)
         .context("Failed to write defaults config file")?;
+
+    // Write resolver config file (static)
     fs::write(candidate_dir.join("002-resolver.cfg"), HAPROXY_RESOLVER_CFG)
         .context("Failed to write resolver config file")?;
 
@@ -1618,41 +1852,81 @@ backend be0
     }
 
     #[test]
+    fn test_parse_kv_pairs() {
+        // Basic parsing with braces
+        let pairs = parse_kv_pairs("{foo:bar,baz:qux}").unwrap();
+        assert_eq!(pairs, vec![("foo", "bar"), ("baz", "qux")]);
+
+        // Without braces
+        let pairs = parse_kv_pairs("foo:bar,baz:qux").unwrap();
+        assert_eq!(pairs, vec![("foo", "bar"), ("baz", "qux")]);
+
+        // Value with colon (splitn(2, ':') preserves it)
+        let pairs = parse_kv_pairs("{check:/health:8080}").unwrap();
+        assert_eq!(pairs, vec![("check", "/health:8080")]);
+
+        // Empty input
+        let pairs = parse_kv_pairs("{}").unwrap();
+        assert!(pairs.is_empty());
+
+        let pairs = parse_kv_pairs("").unwrap();
+        assert!(pairs.is_empty());
+
+        // Whitespace handling
+        let pairs = parse_kv_pairs("{ foo : bar , baz : qux }").unwrap();
+        assert_eq!(pairs, vec![("foo", "bar"), ("baz", "qux")]);
+
+        // Single pair
+        let pairs = parse_kv_pairs("{key:value}").unwrap();
+        assert_eq!(pairs, vec![("key", "value")]);
+
+        // Missing colon should error
+        let result = parse_kv_pairs("{foo}");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing ':'"));
+    }
+
+    #[test]
     fn test_parse_health_check_params() {
         // Test full parameters
         let result = parse_health_check_params("{check:/healthz,port:32150,rise:30,fall:1}");
         assert!(result.is_ok());
-        let (check, port, rise, fall) = result.unwrap();
-        assert_eq!(check, Some("/healthz".to_string()));
-        assert_eq!(port, Some(32150));
-        assert_eq!(rise, Some(30));
-        assert_eq!(fall, Some(1));
+        let config = result.unwrap();
+        assert_eq!(config.check, Some("/healthz".to_string()));
+        assert_eq!(config.port, Some(32150));
+        assert_eq!(config.rise, Some(30));
+        assert_eq!(config.fall, Some(1));
 
         // Test partial parameters
         let result = parse_health_check_params("{check:/health,port:8080}");
         assert!(result.is_ok());
-        let (check, port, rise, fall) = result.unwrap();
-        assert_eq!(check, Some("/health".to_string()));
-        assert_eq!(port, Some(8080));
-        assert_eq!(rise, None);
-        assert_eq!(fall, None);
+        let config = result.unwrap();
+        assert_eq!(config.check, Some("/health".to_string()));
+        assert_eq!(config.port, Some(8080));
+        assert_eq!(config.rise, None);
+        assert_eq!(config.fall, None);
 
         // Test only check endpoint
         let result = parse_health_check_params("{check:/}");
         assert!(result.is_ok());
-        let (check, port, rise, fall) = result.unwrap();
-        assert_eq!(check, Some("/".to_string()));
-        assert_eq!(port, None);
-        assert_eq!(rise, None);
-        assert_eq!(fall, None);
+        let config = result.unwrap();
+        assert_eq!(config.check, Some("/".to_string()));
+        assert_eq!(config.port, None);
+        assert_eq!(config.rise, None);
+        assert_eq!(config.fall, None);
 
         // Test invalid format
         let result = parse_health_check_params("{check}");
         assert!(result.is_err());
 
-        // Test unknown parameter
+        // Test unknown parameter (logged as warning, ignored)
         let result = parse_health_check_params("{check:/health,unknown:value}");
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.check, Some("/health".to_string()));
+        assert_eq!(config.port, None);
+        assert_eq!(config.rise, None);
+        assert_eq!(config.fall, None);
     }
 
     #[test]
@@ -1872,5 +2146,246 @@ backend be0
         assert!(!service.use_sticky_session());
         assert!(!service.frontend_ssl());
         assert!(!service.backend_ssl());
+    }
+
+    #[test]
+    fn test_parse_timeouts_empty() {
+        // Empty string should return defaults
+        let config = parse_timeouts("").unwrap();
+        assert_eq!(config, TimeoutConfig::default());
+
+        // Whitespace only should return defaults
+        let config = parse_timeouts("   ").unwrap();
+        assert_eq!(config, TimeoutConfig::default());
+
+        // Empty braces should return defaults
+        let config = parse_timeouts("{}").unwrap();
+        assert_eq!(config, TimeoutConfig::default());
+    }
+
+    #[test]
+    fn test_parse_timeouts_full() {
+        // Test with all timeout values specified
+        let config = parse_timeouts("{queue:100,connect:5000,client:60000,server:180000}").unwrap();
+        assert_eq!(config.queue_ms(), 100);
+        assert_eq!(config.connect_ms(), 5000);
+        assert_eq!(config.client_ms(), 60000);
+        assert_eq!(config.server_ms(), 180000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_partial() {
+        // Test with only some values specified - others should use defaults
+        let config = parse_timeouts("{connect:5000,server:180000}").unwrap();
+        assert_eq!(config.queue_ms(), DEFAULT_TIMEOUT_QUEUE_MS);
+        assert_eq!(config.connect_ms(), 5000);
+        assert_eq!(config.client_ms(), DEFAULT_TIMEOUT_CLIENT_MS);
+        assert_eq!(config.server_ms(), 180000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_single() {
+        // Test with single timeout override
+        let config = parse_timeouts("{server:300000}").unwrap();
+        assert_eq!(config.queue_ms(), DEFAULT_TIMEOUT_QUEUE_MS);
+        assert_eq!(config.connect_ms(), DEFAULT_TIMEOUT_CONNECT_MS);
+        assert_eq!(config.client_ms(), DEFAULT_TIMEOUT_CLIENT_MS);
+        assert_eq!(config.server_ms(), 300000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_with_whitespace() {
+        // Test with whitespace around values
+        let config = parse_timeouts("{ queue : 50 , connect : 3000 }").unwrap();
+        assert_eq!(config.queue_ms(), 50);
+        assert_eq!(config.connect_ms(), 3000);
+        assert_eq!(config.client_ms(), DEFAULT_TIMEOUT_CLIENT_MS);
+        assert_eq!(config.server_ms(), DEFAULT_TIMEOUT_SERVER_MS);
+    }
+
+    #[test]
+    fn test_parse_timeouts_without_braces() {
+        // Test without braces (should still work)
+        let config = parse_timeouts("queue:100,connect:5000").unwrap();
+        assert_eq!(config.queue_ms(), 100);
+        assert_eq!(config.connect_ms(), 5000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_invalid_values() {
+        // Invalid values should cause an error
+        let result = parse_timeouts("{queue:abc,connect:5000}");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid queue timeout value"));
+
+        // Invalid suffix should cause an error
+        let result = parse_timeouts("{server:5min}");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid server timeout value"));
+    }
+
+    #[test]
+    fn test_parse_timeouts_unknown_keys() {
+        // Unknown keys should be silently ignored
+        let result = parse_timeouts("{unknown:123,connect:5000}");
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.connect, Duration::from_millis(5000));
+        // Other values should remain at defaults
+        assert_eq!(
+            config.queue,
+            Duration::from_millis(DEFAULT_TIMEOUT_QUEUE_MS)
+        );
+    }
+
+    #[test]
+    fn test_timeout_config_default() {
+        let config = TimeoutConfig::default();
+        assert_eq!(config.queue_ms(), DEFAULT_TIMEOUT_QUEUE_MS);
+        assert_eq!(config.connect_ms(), DEFAULT_TIMEOUT_CONNECT_MS);
+        assert_eq!(config.client_ms(), DEFAULT_TIMEOUT_CLIENT_MS);
+        assert_eq!(config.server_ms(), DEFAULT_TIMEOUT_SERVER_MS);
+    }
+
+    #[test]
+    fn test_defaults_config_rendering() {
+        // Test with default timeouts
+        let defaults_config = DefaultsConfig {
+            timeouts: TimeoutConfig::default(),
+        };
+        let rendered = defaults_config
+            .render()
+            .expect("Failed to render defaults config");
+
+        // Check that the rendered template includes default timeout values
+        assert!(rendered.contains("timeout queue   0"));
+        assert!(rendered.contains("timeout connect 2000"));
+        assert!(rendered.contains("timeout client  55000"));
+        assert!(rendered.contains("timeout server  120000"));
+    }
+
+    #[test]
+    fn test_defaults_config_rendering_custom_timeouts() {
+        // Test with custom timeouts
+        let defaults_config = DefaultsConfig {
+            timeouts: TimeoutConfig {
+                queue: Duration::from_millis(100),
+                connect: Duration::from_millis(5000),
+                client: Duration::from_millis(60000),
+                server: Duration::from_millis(180000),
+            },
+        };
+        let rendered = defaults_config
+            .render()
+            .expect("Failed to render defaults config");
+
+        // Check that the rendered template includes custom timeout values
+        assert!(rendered.contains("timeout queue   100"));
+        assert!(rendered.contains("timeout connect 5000"));
+        assert!(rendered.contains("timeout client  60000"));
+        assert!(rendered.contains("timeout server  180000"));
+    }
+
+    #[test]
+    fn test_parse_timeout_value_milliseconds() {
+        // Plain numbers should be parsed as milliseconds
+        assert_eq!(
+            parse_timeout_value("5000"),
+            Some(Duration::from_millis(5000))
+        );
+        assert_eq!(parse_timeout_value("0"), Some(Duration::from_millis(0)));
+        assert_eq!(parse_timeout_value("100"), Some(Duration::from_millis(100)));
+
+        // With explicit ms suffix
+        assert_eq!(
+            parse_timeout_value("5000ms"),
+            Some(Duration::from_millis(5000))
+        );
+        assert_eq!(parse_timeout_value("0ms"), Some(Duration::from_millis(0)));
+        assert_eq!(
+            parse_timeout_value("100ms"),
+            Some(Duration::from_millis(100))
+        );
+
+        // With whitespace
+        assert_eq!(
+            parse_timeout_value(" 5000 "),
+            Some(Duration::from_millis(5000))
+        );
+        assert_eq!(
+            parse_timeout_value(" 5000 ms"),
+            Some(Duration::from_millis(5000))
+        );
+    }
+
+    #[test]
+    fn test_parse_timeout_value_seconds() {
+        // With s suffix should be parsed as seconds
+        assert_eq!(parse_timeout_value("5s"), Some(Duration::from_secs(5)));
+        assert_eq!(parse_timeout_value("60s"), Some(Duration::from_secs(60)));
+        assert_eq!(parse_timeout_value("0s"), Some(Duration::from_secs(0)));
+        assert_eq!(parse_timeout_value(" 30 s"), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn test_parse_timeout_value_invalid() {
+        // Invalid values should return None
+        assert_eq!(parse_timeout_value("abc"), None);
+        assert_eq!(parse_timeout_value("5x"), None);
+        assert_eq!(parse_timeout_value(""), None);
+        assert_eq!(parse_timeout_value("-5"), None);
+    }
+
+    #[test]
+    fn test_parse_timeouts_with_suffixes() {
+        // Test with millisecond suffixes
+        let config = parse_timeouts("{queue:100ms,connect:5000ms}").unwrap();
+        assert_eq!(config.queue_ms(), 100);
+        assert_eq!(config.connect_ms(), 5000);
+
+        // Test with second suffixes
+        let config = parse_timeouts("{client:60s,server:180s}").unwrap();
+        assert_eq!(config.client_ms(), 60000);
+        assert_eq!(config.server_ms(), 180000);
+
+        // Test with mixed formats
+        let config = parse_timeouts("{queue:100,connect:5s,client:60000ms,server:180s}").unwrap();
+        assert_eq!(config.queue_ms(), 100);
+        assert_eq!(config.connect_ms(), 5000);
+        assert_eq!(config.client_ms(), 60000);
+        assert_eq!(config.server_ms(), 180000);
+    }
+
+    #[test]
+    fn test_parse_timeouts_clamping() {
+        // Client and server should be clamped to MAX_TIMEOUT_CLIENT_SERVER_MS (60 minutes)
+        let very_large_ms = MAX_TIMEOUT_CLIENT_SERVER_MS + 1000000; // More than 60 minutes
+        let config = parse_timeouts(&format!(
+            "{{client:{},server:{}}}",
+            very_large_ms, very_large_ms
+        ))
+        .unwrap();
+        assert_eq!(config.client_ms(), MAX_TIMEOUT_CLIENT_SERVER_MS);
+        assert_eq!(config.server_ms(), MAX_TIMEOUT_CLIENT_SERVER_MS);
+
+        // Queue and connect should NOT be clamped
+        let config = parse_timeouts(&format!(
+            "{{queue:{},connect:{}}}",
+            very_large_ms, very_large_ms
+        ))
+        .unwrap();
+        assert_eq!(config.queue_ms(), very_large_ms);
+        assert_eq!(config.connect_ms(), very_large_ms);
+
+        // Test clamping with seconds
+        let config = parse_timeouts("{client:7200s,server:7200s}").unwrap(); // 2 hours in seconds
+        assert_eq!(config.client_ms(), MAX_TIMEOUT_CLIENT_SERVER_MS); // Clamped to 60 minutes
+        assert_eq!(config.server_ms(), MAX_TIMEOUT_CLIENT_SERVER_MS);
     }
 }

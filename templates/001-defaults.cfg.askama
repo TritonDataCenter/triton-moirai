@@ -6,6 +6,7 @@
 
 #
 # Copyright 2025 MNX Cloud, Inc.
+# Copyright 2025 Edgecast Cloud LLC.
 #
 
 #                                                  #
@@ -26,7 +27,8 @@ defaults
     no option httpclose
     no option http-server-close
     retries   1
-    timeout queue   0
-    timeout connect 2000
-    timeout client  55000
-    timeout server  120000
+    timeout queue   {{ timeouts.queue_ms() }}
+    timeout connect {{ timeouts.connect_ms() }}
+    timeout client  {{ timeouts.client_ms() }}
+    timeout server  {{ timeouts.server_ms() }}
+

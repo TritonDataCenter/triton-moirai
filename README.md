@@ -47,6 +47,8 @@ Moirai supports the following keys:
 * `cloud.tritoncompute:syslog` - Remote syslog server endpoint in `HOST:PORT` format
   (e.g., `syslog.example.com:514` or `10.11.28.101:30514`). When configured, HAProxy
   will forward logs to this server in addition to local logging.
+* `cloud.tritoncompute:timeouts` - Custom HAProxy timeout values in milliseconds.
+  Uses JSON-like syntax (e.g., `{server:180000}`). See Timeout Configuration section below.
 
 Metadata keys can be added post-provision. The load balancer will reconfigure
 itself shortly after the metadata is updated.
@@ -216,10 +218,101 @@ The `cloud.tritoncompute:syslog` value must be in `HOST:PORT` format:
 The syslog configuration can be updated dynamically without instance restart:
 ```bash
 # Add or update syslog endpoint
-triton instance metadata update <instance> cloud.tritoncompute:syslog=10.11.28.101:30514
+triton instance metadata set <instance> cloud.tritoncompute:syslog=10.11.28.101:30514
 
 # Remove syslog endpoint
 triton instance metadata delete <instance> cloud.tritoncompute:syslog
+```
+
+The load balancer will detect the metadata change and reconfigure HAProxy within
+approximately one minute.
+
+## Timeout Configuration
+
+The load balancer uses default HAProxy timeout values that work well for most use cases.
+However, you can override these timeouts by setting the `cloud.tritoncompute:timeouts`
+metadata key.
+
+### Timeout Metadata Format
+
+The `cloud.tritoncompute:timeouts` value uses a JSON-like syntax with key:value pairs
+enclosed in curly braces:
+
+```
+{queue:0,connect:5000,client:60s,server:180000ms}
+```
+
+All parameters are optional. Any timeout not specified will use its default value.
+
+### Timeout Value Formats
+
+Timeout values can be specified in three formats:
+
+| Format | Description | Example |
+|--------|-------------|---------|
+| Plain number | Milliseconds | `5000` = 5000ms |
+| Number with `ms` | Milliseconds (explicit) | `5000ms` = 5000ms |
+| Number with `s` | Seconds | `60s` = 60000ms |
+
+### Supported Timeout Parameters
+
+| Parameter | Default | Max | Description |
+|-----------|---------|-----|-------------|
+| `queue`   | 0       | - | Time to wait in queue for a connection slot. 0 = unlimited |
+| `connect` | 2000    | - | Time to wait for a connection to be established to a backend |
+| `client`  | 55000   | 60 min | Client inactivity timeout |
+| `server`  | 120000  | 60 min | Server response timeout |
+
+**Note:** Client and server timeouts are clamped to a maximum of 60 minutes (3600000ms).
+
+**TCP Mode Note:** When using TCP services (`tcp://` or `tcp-proxy-v2://`), consider setting
+`client` and `server` timeouts to equal values. In TCP mode, HAProxy proxies raw bytes
+bidirectionally without distinguishing request/response phases. When either timeout expires,
+the entire connection closes—having different values can make it confusing which timeout
+triggered the disconnection. See the [HAProxy Blog](https://www.haproxy.com/blog/the-four-essential-sections-of-an-haproxy-configuration#timeout-connect-timeout-client-timeout-server)
+for more details.
+
+### Timeout Examples
+
+```bash
+# Override server timeout using seconds
+triton instance metadata set <instance> \
+  cloud.tritoncompute:timeouts='{server:300s}'
+
+# Override server timeout using milliseconds (equivalent to above)
+triton instance metadata set <instance> \
+  cloud.tritoncompute:timeouts='{server:300000}'
+
+# Mix different formats
+triton instance metadata set <instance> \
+  cloud.tritoncompute:timeouts='{connect:5s,client:60s,server:180000ms}'
+
+# Override all timeouts
+triton instance metadata set <instance> \
+  cloud.tritoncompute:timeouts='{queue:100,connect:5000,client:60000,server:180000}'
+```
+
+### Setting Timeouts at Provision Time
+
+```bash
+triton instance create -w -t triton.cns.services=frontend \
+  -m cloud.tritoncompute:portmap="http://80:web.svc.${UUID?}.${CNS_DOMAIN?}:80" \
+  -m cloud.tritoncompute:loadbalancer=true \
+  -m cloud.tritoncompute:timeouts='{server:180s}' \
+  -n frontend \
+  ${IMAGE?} ${PACKAGE?}
+```
+
+### Dynamic Updates
+
+Timeout configuration can be updated dynamically without instance restart:
+
+```bash
+# Update timeouts (using seconds)
+triton instance metadata set <instance> cloud.tritoncompute:timeouts='{server:300s}'
+
+# Remove custom timeouts (reverts to defaults)
+triton instance metadata delete <instance> cloud.tritoncompute:timeouts
 ```
 
 The load balancer will detect the metadata change and reconfigure HAProxy within
@@ -388,10 +481,10 @@ triton instance create -w -t triton.cns.services=frontend-syslog \
 curl http://frontend-syslog.svc.${UUID?}.${CNS_DOMAIN?}/hostname.txt
 
 # Update syslog configuration dynamically
-triton instance metadata update frontend-syslog cloud.tritoncompute:syslog=192.168.1.10:514
+triton instance metadata set frontend-syslog cloud.tritoncompute:syslog=192.168.1.10:514
 
 # Update syslog to use hostname
-triton instance metadata update frontend-syslog cloud.tritoncompute:syslog=syslog.example.com:514
+triton instance metadata set frontend-syslog cloud.tritoncompute:syslog=syslog.example.com:514
 
 # Remove syslog forwarding
 triton instance metadata delete frontend-syslog cloud.tritoncompute:syslog
