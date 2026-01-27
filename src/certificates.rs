@@ -3,6 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 // Copyright 2025 MNX Cloud, Inc.
+// Copyright 2026 Edgecast Cloud LLC.
 
 //! # Certificate Management Module
 //!
@@ -39,6 +40,7 @@ use anyhow::{Context, Result};
 use log::{debug, info};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs as unix_fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -50,6 +52,37 @@ pub const SELF_SIGNED_KEY: &str = "/opt/triton/tls/self-signed/fullchain.pem.key
 pub const SELF_SIGNED_CERT: &str = "/opt/triton/tls/self-signed/fullchain.pem";
 pub const DEFAULT_CERT_DIR: &str = "/opt/triton/tls/default";
 pub const DEHYDRATED_DIR: &str = "/opt/triton/dehydrated";
+
+/// Updates a symlink, removing it first if it already exists
+///
+/// This is a force-update version of symlink creation that will remove
+/// any existing symlink or file at the target path before creating the new symlink.
+///
+/// # Arguments
+///
+/// * `source` - The path the symlink should point to
+/// * `target` - The path where the symlink should be created
+///
+/// # Returns
+///
+/// * `Result<()>` - Ok if successful, Err otherwise
+fn update_symlink(source: &Path, target: &Path) -> Result<()> {
+    // Remove existing symlink or file if present
+    if target.is_symlink() || target.exists() {
+        fs::remove_file(target).context("Failed to remove existing symlink")?;
+        debug!("Removed existing symlink at {}", target.display());
+    }
+
+    // Create the new symlink
+    unix_fs::symlink(source, target).context("Failed to create symlink")?;
+    info!(
+        "Created symlink from {} to {}",
+        target.display(),
+        source.display()
+    );
+
+    Ok(())
+}
 
 /// Configures TLS certificates based on metadata
 ///
@@ -127,6 +160,26 @@ pub fn configure_tls() -> Result<bool> {
         .context("Failed to write stdout to log file")?;
     file.write_all(&output.stderr)
         .context("Failed to write stderr to log file")?;
+
+    // Ensure the default symlink points to the Let's Encrypt certificate directory
+    // Extract the primary domain name (first domain in the cert_subject)
+    let primary_domain = cert_subject
+        .split(',')
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No domain found in certificate subject"))?
+        .trim();
+
+    let tls_dir = Path::new("/opt/triton/tls");
+    let letsencrypt_cert_dir = tls_dir.join(primary_domain);
+    let default_symlink = Path::new(DEFAULT_CERT_DIR);
+
+    // Update the default symlink to point to the Let's Encrypt certificate directory
+    update_symlink(&letsencrypt_cert_dir, default_symlink)?;
+
+    info!(
+        "Updated default symlink to point to Let's Encrypt certificate directory: {}",
+        letsencrypt_cert_dir.display()
+    );
 
     info!("Certificates were updated.");
     Ok(true)
