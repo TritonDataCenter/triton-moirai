@@ -68,31 +68,55 @@ pub const DEHYDRATED_DIR: &str = "/opt/triton/dehydrated";
 /// * `Result<()>` - Ok if successful, Err otherwise
 fn update_symlink(source: &Path, target: &Path) -> Result<()> {
     // Remove existing entry if present
-    if let Ok(meta) = fs::symlink_metadata(target) {
-        let ft = meta.file_type();
-        if ft.is_symlink() {
-            fs::remove_file(target).context("Failed to remove existing symlink")?;
-            debug!("Removed existing symlink at {}", target.display());
-        } else if ft.is_file() {
-            fs::remove_file(target).context("Failed to remove existing file")?;
-            debug!("Removed existing file at {}", target.display());
-        } else if ft.is_dir() {
-            anyhow::bail!(
-                "Cannot create symlink at {}: path is a directory",
+    match fs::symlink_metadata(target) {
+        Ok(meta) => {
+            let ft = meta.file_type();
+            if ft.is_symlink() {
+                fs::remove_file(target).with_context(|| {
+                    format!("Failed to remove existing symlink at {}", target.display())
+                })?;
+                debug!("Removed existing symlink at {}", target.display());
+            } else if ft.is_file() {
+                fs::remove_file(target).with_context(|| {
+                    format!("Failed to remove existing file at {}", target.display())
+                })?;
+                debug!("Removed existing file at {}", target.display());
+            } else if ft.is_dir() {
+                anyhow::bail!(
+                    "Cannot create symlink at {}: path is a directory",
+                    target.display()
+                );
+            } else {
+                anyhow::bail!(
+                    "Cannot create symlink at {}: unexpected file type",
+                    target.display()
+                );
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Target doesn't exist, which is fine - we'll create the symlink
+            debug!(
+                "No existing entry at {}, creating new symlink",
                 target.display()
             );
-        } else {
-            anyhow::bail!(
-                "Cannot create symlink at {}: unexpected file type",
-                target.display()
-            );
+        }
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("Failed to check existing entry at {}", target.display())
+            });
         }
     }
 
     // Create the new symlink
-    unix_fs::symlink(source, target).context("Failed to create symlink")?;
+    unix_fs::symlink(source, target).with_context(|| {
+        format!(
+            "Failed to create symlink {} -> {}",
+            target.display(),
+            source.display()
+        )
+    })?;
     info!(
-        "Created symlink from {} to {}",
+        "Created symlink {} -> {}",
         target.display(),
         source.display()
     );
@@ -188,6 +212,16 @@ pub fn configure_tls() -> Result<bool> {
     let tls_dir = Path::new("/opt/triton/tls");
     let letsencrypt_cert_dir = tls_dir.join(primary_domain);
     let default_symlink = Path::new(DEFAULT_CERT_DIR);
+
+    // Verify the Let's Encrypt certificate directory exists before creating symlink
+    if !letsencrypt_cert_dir.exists() {
+        return Err(anyhow::anyhow!(
+            "Let's Encrypt certificate directory does not exist: {}. \
+             dehydrated may have failed to obtain certificates for domain: {}",
+            letsencrypt_cert_dir.display(),
+            primary_domain
+        ));
+    }
 
     // Update the default symlink to point to the Let's Encrypt certificate directory
     update_symlink(&letsencrypt_cert_dir, default_symlink)?;
