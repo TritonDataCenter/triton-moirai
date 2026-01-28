@@ -67,10 +67,26 @@ pub const DEHYDRATED_DIR: &str = "/opt/triton/dehydrated";
 ///
 /// * `Result<()>` - Ok if successful, Err otherwise
 fn update_symlink(source: &Path, target: &Path) -> Result<()> {
-    // Remove existing symlink or file if present
-    if target.is_symlink() || target.exists() {
-        fs::remove_file(target).context("Failed to remove existing symlink")?;
-        debug!("Removed existing symlink at {}", target.display());
+    // Remove existing entry if present
+    if let Ok(meta) = fs::symlink_metadata(target) {
+        let ft = meta.file_type();
+        if ft.is_symlink() {
+            fs::remove_file(target).context("Failed to remove existing symlink")?;
+            debug!("Removed existing symlink at {}", target.display());
+        } else if ft.is_file() {
+            fs::remove_file(target).context("Failed to remove existing file")?;
+            debug!("Removed existing file at {}", target.display());
+        } else if ft.is_dir() {
+            anyhow::bail!(
+                "Cannot create symlink at {}: path is a directory",
+                target.display()
+            );
+        } else {
+            anyhow::bail!(
+                "Cannot create symlink at {}: unexpected file type",
+                target.display()
+            );
+        }
     }
 
     // Create the new symlink
