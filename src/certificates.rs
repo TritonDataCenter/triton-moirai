@@ -47,6 +47,7 @@ use std::process::Command;
 use crate::{mdata_get, CERT_NAME_KEY};
 
 // Constants for certificate directories
+pub const TLS_DIR: &str = "/opt/triton/tls";
 pub const SELF_SIGNED_CERT_DIR: &str = "/opt/triton/tls/self-signed";
 pub const SELF_SIGNED_KEY: &str = "/opt/triton/tls/self-signed/fullchain.pem.key";
 pub const SELF_SIGNED_CERT: &str = "/opt/triton/tls/self-signed/fullchain.pem";
@@ -209,7 +210,7 @@ pub fn configure_tls() -> Result<bool> {
         .ok_or_else(|| anyhow::anyhow!("No domain found in certificate subject"))?
         .trim();
 
-    let tls_dir = Path::new("/opt/triton/tls");
+    let tls_dir = Path::new(TLS_DIR);
     let letsencrypt_cert_dir = tls_dir.join(primary_domain);
     let default_symlink = Path::new(DEFAULT_CERT_DIR);
 
