@@ -3,6 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 // Copyright 2025 MNX Cloud, Inc.
+// Copyright 2026 Edgecast Cloud LLC.
 
 //! # Certificate Management Module
 //!
@@ -39,17 +40,90 @@ use anyhow::{Context, Result};
 use log::{debug, info};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs as unix_fs;
 use std::path::Path;
 use std::process::Command;
 
 use crate::{mdata_get, CERT_NAME_KEY};
 
 // Constants for certificate directories
+pub const TLS_DIR: &str = "/opt/triton/tls";
 pub const SELF_SIGNED_CERT_DIR: &str = "/opt/triton/tls/self-signed";
 pub const SELF_SIGNED_KEY: &str = "/opt/triton/tls/self-signed/fullchain.pem.key";
 pub const SELF_SIGNED_CERT: &str = "/opt/triton/tls/self-signed/fullchain.pem";
 pub const DEFAULT_CERT_DIR: &str = "/opt/triton/tls/default";
 pub const DEHYDRATED_DIR: &str = "/opt/triton/dehydrated";
+
+/// Updates a symlink, removing it first if it already exists
+///
+/// This is a force-update version of symlink creation that will remove
+/// any existing symlink or file at the target path before creating the new symlink.
+///
+/// # Arguments
+///
+/// * `source` - The path the symlink should point to
+/// * `target` - The path where the symlink should be created
+///
+/// # Returns
+///
+/// * `Result<()>` - Ok if successful, Err otherwise
+fn update_symlink(source: &Path, target: &Path) -> Result<()> {
+    // Remove existing entry if present
+    match fs::symlink_metadata(target) {
+        Ok(meta) => {
+            let ft = meta.file_type();
+            if ft.is_symlink() {
+                fs::remove_file(target).with_context(|| {
+                    format!("Failed to remove existing symlink at {}", target.display())
+                })?;
+                debug!("Removed existing symlink at {}", target.display());
+            } else if ft.is_file() {
+                fs::remove_file(target).with_context(|| {
+                    format!("Failed to remove existing file at {}", target.display())
+                })?;
+                debug!("Removed existing file at {}", target.display());
+            } else if ft.is_dir() {
+                anyhow::bail!(
+                    "Cannot create symlink at {}: path is a directory",
+                    target.display()
+                );
+            } else {
+                anyhow::bail!(
+                    "Cannot create symlink at {}: unexpected file type",
+                    target.display()
+                );
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Target doesn't exist, which is fine - we'll create the symlink
+            debug!(
+                "No existing entry at {}, creating new symlink",
+                target.display()
+            );
+        }
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!("Failed to check existing entry at {}", target.display())
+            });
+        }
+    }
+
+    // Create the new symlink
+    unix_fs::symlink(source, target).with_context(|| {
+        format!(
+            "Failed to create symlink {} -> {}",
+            target.display(),
+            source.display()
+        )
+    })?;
+    info!(
+        "Created symlink {} -> {}",
+        target.display(),
+        source.display()
+    );
+
+    Ok(())
+}
 
 /// Configures TLS certificates based on metadata
 ///
@@ -127,6 +201,36 @@ pub fn configure_tls() -> Result<bool> {
         .context("Failed to write stdout to log file")?;
     file.write_all(&output.stderr)
         .context("Failed to write stderr to log file")?;
+
+    // Ensure the default symlink points to the Let's Encrypt certificate directory
+    // Extract the primary domain name (first domain in the cert_subject)
+    let primary_domain = cert_subject
+        .split(',')
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No domain found in certificate subject"))?
+        .trim();
+
+    let tls_dir = Path::new(TLS_DIR);
+    let letsencrypt_cert_dir = tls_dir.join(primary_domain);
+    let default_symlink = Path::new(DEFAULT_CERT_DIR);
+
+    // Verify the Let's Encrypt certificate directory exists before creating symlink
+    if !letsencrypt_cert_dir.exists() {
+        return Err(anyhow::anyhow!(
+            "Let's Encrypt certificate directory does not exist: {}. \
+             dehydrated may have failed to obtain certificates for domain: {}",
+            letsencrypt_cert_dir.display(),
+            primary_domain
+        ));
+    }
+
+    // Update the default symlink to point to the Let's Encrypt certificate directory
+    update_symlink(&letsencrypt_cert_dir, default_symlink)?;
+
+    info!(
+        "Updated default symlink to point to Let's Encrypt certificate directory: {}",
+        letsencrypt_cert_dir.display()
+    );
 
     info!("Certificates were updated.");
     Ok(true)
